@@ -1,88 +1,98 @@
 # Máquina de estados da OS
 
-> **Rascunho para revisão do grupo** · Tarefa 1 — Bloco 0  
-> **Referências:** contrato de eventos v1.0 · ADR-0011
+> **Tarefa 1 — Bloco 0** · Referências: contrato de eventos v1.1 (PR #3) · ADR-0011
 
-Este documento registra a revisão do contrato e uma proposta de regras para as transições, concorrência e idempotência da OS. **Não altera o contrato v1.0:** divergências precisam ser confirmadas pelo grupo e, se aprovadas, corrigidas na fonte oficial com incremento de versão.
+Este documento define as transições da OS, a concorrência e a idempotência no OS Service. A **tabela da seção 3 é a especificação dos testes do próximo PR**: um teste por transição legal e um por transição ilegal.
 
 ## Índice
 
 - [1. Revisão do contrato](#1-revisão-do-contrato)
 - [2. Regras gerais](#2-regras-gerais-de-transição)
 - [3. Tabela de transições](#3-tabela-de-transições)
-- [4. Lock otimista](#4-concorrência-e-lock-otimista)
+- [4. Lock otimista (Reread Value)](#4-concorrência-e-lock-otimista-reread-value)
 - [5. Idempotência](#5-idempotência-de-mensagens)
-- [6. Decisões pendentes](#6-decisões-pendentes)
+- [6. Pendências de implementação](#6-pendências-de-implementação)
 
 ## 1. Revisão do contrato
 
-O fluxo geral faz sentido: gerar orçamento, aguardar a decisão do cliente, cobrar antes da execução e compensar falhas posteriores. Estes pontos precisam de confirmação antes de fechar as regras de domínio.
+Os 10 pontos levantados na v1.0 foram respondidos na v1.1 do contrato (PR #3). A tabela abaixo registra a resposta e onde ela vale nesta máquina de estados.
 
-### Pontos para alinhar
-
-1. **Diagnóstico e itens do orçamento** — O contrato Markdown inclui `itensDiagnosticados` no exemplo de `GerarOrcamento`, mas o AsyncAPI não o marca como obrigatório. Nenhum dos documentos define claramente quem entrega os itens ao orquestrador ou um evento de diagnóstico concluído. Definir a origem, a obrigatoriedade e o payload.
-
-2. **Recusa do cliente versus falha ao gerar orçamento** — No contrato Markdown, `orcamento.recusado` aparece como retorno da geração e como decisão do cliente. Já o AsyncAPI descreve `OrcamentoDecidido` como decisão do cliente e não define um evento de falha na geração. Alinhar as fontes e definir como representar cada resultado.
-
-3. **Expiração em sete dias** — O contrato Markdown define TTL no RabbitMQ. O AsyncAPI já descreve o payload de `AprovacaoExpirada` e diz que ele é publicado quando expira a mensagem da fila `billing.aguardando-aprovacao`. Ainda falta descrever a topologia DLX/fila de destino e qual componente transforma a dead-letter no evento de domínio. A expiração deve ser ignorada se não corresponder ao orçamento vigente ou se a saga já tiver avançado.
-
-4. **Compensação da execução** — A fila `execucao.cancelar-execucao` e o comando `CancelarExecucao` existem, mas a tabela da Saga não deixa claro quando usá-los. Definir se se aplicam a uma execução enfileirada, iniciada ou a ambas, e como se ordenam em relação ao estorno e à anulação do orçamento.
-
-5. **Comandos e eventos citados sem definição completa** — A Parte 3b menciona `CancelarOS` e `os.finalizada`; a Parte 2 lista `os.cancelada`. Como a Parte 4 determina que campos não listados não existem, é preciso definir payloads e produtor/consumidor para esses itens ou remover as referências. O AsyncAPI já define o payload de `AprovacaoExpirada`.
-
-6. **Estado `APROVADA`** — O fluxo inclui esse estado, mas não deixa explícito se ele é persistido antes de `AGUARDANDO_PAGAMENTO`, nem em que momento o comando de cobrança é publicado. Confirmar a sequência.
-
-7. **Gatilhos de execução e finalização** — Definir se `pagamento.confirmado` só dispara `EnviarParaExecucao` ou também altera o estado, e se `execucao.iniciada` confirma a entrada em `EM_EXECUCAO`. Esclarecer também a relação entre `execucao.concluida`, `FINALIZADA` e `os.finalizada`.
-
-8. **Falhas e eventos fora de ordem** — Idempotência por `messageId` evita a repetição da mesma mensagem, mas não resolve eventos atrasados, incompatíveis com a fase atual ou de outra saga. Definir registro, descarte/retry e política de DLQ.
-
-9. **Cobrança duplicada** — A idempotência local não impede, por si só, chamadas duplicadas ao Mercado Pago. O Billing deve confirmar uma chave de idempotência externa e sua origem (por exemplo, um `messageId` estável do comando).
-
-10. **Cancelamento solicitado pelo cliente** — `cancelado_pelo_cliente` aparece entre os motivos de compensação, mas não há operação, evento ou regra de elegibilidade definidos. Estabelecer a política e as compensações por estágio antes de expor esse cancelamento pela API.
-
-> **Parecer provisório:** o contrato v1.0 continua sendo a referência vigente e está marcado como fechado para implementação. Os itens acima são ambiguidades identificadas nesta revisão, não alterações aprovadas. Validar Billing com Gustavo, diagnóstico/execução com David e decisões transversais com Roberta. Se o grupo confirmar mudanças, atualizar a fonte pertinente e incrementar sua versão conforme a regra do contrato.
+| # | Ponto | Resposta na v1.1 | Efeito na OS |
+|---|---|---|---|
+| 1 | Itens do orçamento | `itensDiagnosticados` obrigatório, mínimo 1. Vazio vira `orcamento.falhou` (`sem_itens_a_orcar`) | T2, T4 |
+| 2 | Recusa × falha na geração | Eventos separados: `orcamento.falhou` (geração) e `orcamento.recusado` (cliente) | T4, T6 |
+| 3 | Expiração em 7 dias | TTL na fila `billing.aguardando-aprovacao`, DLX `oficina.espera`, fila `billing.aprovacao-expirada`. O Billing transforma a dead-letter em `aprovacao.expirada` | T6 |
+| 4 | Compensação da execução | `CancelarExecucao` vale para execução enfileirada ou iniciada. Ordem: `CancelarExecucao` → `EstornarPagamento` → `AnularOrcamento` → `CancelarOS` | T11 |
+| 5 | `CancelarOS`, `os.cancelada`, `os.finalizada` | `CancelarOS` é interno, sem fila. `os.cancelada` e `os.finalizada` têm payload definido | T10, T11 |
+| 6 | Estado `APROVADA` | Persistido ao processar `orcamento.aprovado`, antes de publicar `CobrarPagamento` | T5, T7 |
+| 7 | Gatilhos de execução | `EM_EXECUCAO` ao publicar `EnviarParaExecucao`. `execucao.iniciada` só registra `mecanicoId` e `execucaoId` | T8 |
+| 8 | Eventos fora de ordem | Descartar, registrar em log e confirmar (ACK) se saga, estado ou recurso não conferem | Regra 3 |
+| 9 | Cobrança duplicada | Restrição única por `orcamentoId` no Billing | fora da OS |
+| 10 | Cancelamento pelo cliente | Fora do escopo da Fase 4. `cancelado_pelo_cliente` saiu do enum | sem transição |
 
 ## 2. Regras gerais de transição
 
-1. Validar o estado persistido, `osId`, `sagaId` e, quando aplicável, o identificador do recurso vigente (`orcamentoId`, `pagamentoId` ou `execucaoId`).
-2. Uma repetição do mesmo `messageId` não pode produzir efeitos adicionais. Mensagens diferentes que representem semanticamente o mesmo resultado também não podem avançar a Saga duas vezes.
-3. Eventos atrasados, de outra saga/recurso ou incompatíveis com o estado atual não alteram a OS. Registrar a ocorrência e aplicar a política acordada de retry ou DLQ; nunca forçar a transição.
-4. **`CANCELADA` e `ENTREGUE` são terminais.** Nenhum evento ou solicitação os altera; uma reabertura exigiria um fluxo explícito aprovado pelo grupo.
-5. Falhas em etapas diferentes podem exigir compensações diferentes. “Qualquer falha → `CANCELADA`” não autoriza pular compensações. Durante a compensação, a fase da Saga deve impedir que eventos de sucesso concorrentes avancem o fluxo.
-6. A tabela abaixo é uma **lista de permissões**: toda transição não listada é ilegal. Transições para `CANCELADA` continuam sujeitas às guardas e compensações específicas.
+1. Validar o estado persistido, `osId`, `sagaId` e o recurso vigente (`orcamentoId`, `pagamentoId` ou `execucaoId`).
+2. Repetição do mesmo `messageId` não produz efeito adicional (seção 5).
+3. Evento atrasado, de outra saga ou incompatível com o estado atual **não altera a OS**: registrar em log com o motivo e confirmar a mensagem. Não vai para a DLQ e não força transição.
+4. **`CANCELADA` e `ENTREGUE` são terminais.** Nenhum evento os altera.
+5. A tabela da seção 3 é uma **lista de permissões**: toda transição não listada é ilegal.
+6. Durante a compensação, a OS só chega a `CANCELADA` depois do último passo (`CancelarOS`). Eventos de sucesso que chegarem nesse intervalo são descartados pela regra 3.
+7. A transição de estado e a gravação do `version` acontecem na mesma operação (seção 4).
 
 ## 3. Tabela de transições
 
-**Legenda:** `Condicional` significa que a transição só é permitida quando a guarda é satisfeita. Itens marcados **Pendente** dependem de confirmação do grupo.
+**Decisão do grupo:** estas são as únicas transições legais da OS. Cada linha `T` e cada linha `I` vira um teste.
 
-| De | Para | Regra e guarda |
-|---|---|---|
-| `RECEBIDA` | `EM_DIAGNOSTICO` | **Condicional:** ação autorizada inicia o diagnóstico e o ator/mecânico é válido. Definir responsável e como o resultado chega à OS. |
-| `EM_DIAGNOSTICO` | `AGUARDANDO_ORCAMENTO` | **Condicional · Pendente:** diagnóstico concluído e itens disponíveis. Origem e payload ainda precisam ser definidos. |
-| `AGUARDANDO_ORCAMENTO` | `AGUARDANDO_APROVACAO` | **Condicional:** `orcamento.gerado` corresponde à OS e à saga ativa; registrar o `orcamentoId` vigente. |
-| `AGUARDANDO_ORCAMENTO` | `CANCELADA` | **Condicional · Pendente:** falha definitiva de geração, após retries e compensações aplicáveis. Evento e payload de falha não estão definidos. |
-| `AGUARDANDO_APROVACAO` | `APROVADA` | **Condicional:** `orcamento.aprovado` corresponde à OS, à saga ativa e ao `orcamentoId` vigente, dentro da validade. |
-| `AGUARDANDO_APROVACAO` | `CANCELADA` | **Condicional:** recusa do cliente para o orçamento vigente ou expiração válida. Ignorar expiração tardia se a saga já avançou ou o orçamento não for o vigente. |
-| `APROVADA` | `AGUARDANDO_PAGAMENTO` | **Condicional:** aprovação persistida; o orquestrador inicia a cobrança do orçamento aprovado. Confirmar estado intermediário e publicação confiável do comando. |
-| `AGUARDANDO_PAGAMENTO` | `EM_EXECUCAO` | **Condicional · Pendente:** pagamento confirmado para o mesmo `osId` e `orcamentoId` permite enviar `EnviarParaExecucao`. Confirmar se o estado muda ao enviar o comando ou ao receber `execucao.iniciada`. |
-| `AGUARDANDO_PAGAMENTO` | `CANCELADA` | **Condicional:** recusa ou falha/timeout definitivo, após definir compensações e garantir que não há cobrança confirmada. |
-| `EM_EXECUCAO` | `FINALIZADA` | **Condicional:** `execucao.concluida` corresponde à execução vigente e à saga ativa; persistir uma única vez. Confirmar emissão de `os.finalizada`. |
-| `EM_EXECUCAO` | `CANCELADA` | **Condicional:** falha definitiva e compensações aplicáveis concluídas ou registradas, incluindo estorno/anulação e, se decidido, cancelamento da execução. |
-| `FINALIZADA` | `ENTREGUE` | **Condicional:** ação operacional autorizada, fora da Saga. Definir endpoint/ator e registrar histórico. |
-| Estado elegível, a definir por estágio | `CANCELADA` | **Condicional · Pendente:** causa válida para o estágio e compensações exigidas. Definir estados elegíveis e política de cancelamento pelo cliente. `FINALIZADA`, `ENTREGUE` e `CANCELADA` não entram nesta regra genérica. |
-| `CANCELADA` ou `ENTREGUE` | Qualquer outro estado | **Ilegal:** estados terminais; eventos atrasados não reabrem nem regridem a OS. |
-| Qualquer estado | Estado que salte etapa obrigatória | **Ilegal:** por exemplo, `AGUARDANDO_APROVACAO` → `EM_EXECUCAO` sem aprovação e pagamento confirmados. |
-| Qualquer estado | Mesmo estado | **Sem transição:** tratar como repetição idempotente; não duplicar efeitos ou comandos. |
+### Transições legais (12 testes)
+
+| ID | De | Para | Gatilho | Guarda |
+|---|---|---|---|---|
+| T1 | `RECEBIDA` | `EM_DIAGNOSTICO` | Ação autorizada de iniciar diagnóstico | Mecânico válido |
+| T2 | `EM_DIAGNOSTICO` | `AGUARDANDO_ORCAMENTO` | Diagnóstico concluído; publica `GerarOrcamento` | Pelo menos 1 item em `itensDiagnosticados` |
+| T3 | `AGUARDANDO_ORCAMENTO` | `AGUARDANDO_APROVACAO` | `orcamento.gerado` | `osId` e `sagaId` conferem; grava `orcamentoId` vigente |
+| T4 | `AGUARDANDO_ORCAMENTO` | `CANCELADA` | `orcamento.falhou` | `osId` e `sagaId` conferem; compensação: só `CancelarOS` |
+| T5 | `AGUARDANDO_APROVACAO` | `APROVADA` | `orcamento.aprovado` | `orcamentoId` é o vigente |
+| T6 | `AGUARDANDO_APROVACAO` | `CANCELADA` | `orcamento.recusado` ou `aprovacao.expirada` | `orcamentoId` é o vigente; compensação: `AnularOrcamento` → `CancelarOS` |
+| T7 | `APROVADA` | `AGUARDANDO_PAGAMENTO` | `CobrarPagamento` publicado | `APROVADA` já persistido |
+| T8 | `AGUARDANDO_PAGAMENTO` | `EM_EXECUCAO` | `pagamento.confirmado`; publica `EnviarParaExecucao` | `osId` e `orcamentoId` conferem |
+| T9 | `AGUARDANDO_PAGAMENTO` | `CANCELADA` | `pagamento.recusado` (inclui motivo `timeout`) | Compensação: `AnularOrcamento` → `CancelarOS` |
+| T10 | `EM_EXECUCAO` | `FINALIZADA` | `execucao.concluida` | `execucaoId` é o vigente; publica `os.finalizada` |
+| T11 | `EM_EXECUCAO` | `CANCELADA` | `execucao.falhou` | Compensação: `CancelarExecucao` → `EstornarPagamento` → `AnularOrcamento` → `CancelarOS`; publica `os.cancelada` |
+| T12 | `FINALIZADA` | `ENTREGUE` | Ação operacional autorizada, fora da saga | Ator autorizado; registra histórico |
+
+Compensação que não se aplica é pulada, não é erro. `EstornarPagamento` só roda se houve pagamento confirmado.
+
+### Transições ilegais (78 testes)
+
+Os 10 estados formam 100 pares. Tirando as 12 legais e os 10 pares "mesmo estado", restam **78 transições ilegais**. O teste é parametrizado sobre esse conjunto e espera rejeição, sem mudar o estado nem o `version`.
+
+| ID | De | Destinos ilegais | Pares |
+|---|---|---|---|
+| I1 | `RECEBIDA` | todos, exceto `EM_DIAGNOSTICO` (inclui `CANCELADA`) | 8 |
+| I2 | `EM_DIAGNOSTICO` | todos, exceto `AGUARDANDO_ORCAMENTO` (inclui `CANCELADA`) | 8 |
+| I3 | `AGUARDANDO_ORCAMENTO` | todos, exceto `AGUARDANDO_APROVACAO` e `CANCELADA` | 7 |
+| I4 | `AGUARDANDO_APROVACAO` | todos, exceto `APROVADA` e `CANCELADA` (inclui `EM_EXECUCAO` sem pagamento) | 7 |
+| I5 | `APROVADA` | todos, exceto `AGUARDANDO_PAGAMENTO` (inclui `CANCELADA`) | 8 |
+| I6 | `AGUARDANDO_PAGAMENTO` | todos, exceto `EM_EXECUCAO` e `CANCELADA` | 7 |
+| I7 | `EM_EXECUCAO` | todos, exceto `FINALIZADA` e `CANCELADA` | 7 |
+| I8 | `FINALIZADA` | todos, exceto `ENTREGUE` (inclui `CANCELADA`) | 8 |
+| I9 | `CANCELADA` | qualquer outro estado (terminal) | 9 |
+| I10 | `ENTREGUE` | qualquer outro estado (terminal) | 9 |
+
+Soma: 8+8+7+7+8+7+7+8+9+9 = 78. A implementação deve gerar o conjunto como `todos os pares − legais − mesmo estado`, sem digitar os pares à mão, e conferir que ele tem 78 elementos.
+
+### Mesmo estado (10 testes)
+
+Evento que levaria a OS ao estado em que ela já está é repetição idempotente: não muda estado, não incrementa `version`, não publica comando de novo.
 
 ### Diferenças em relação à Fase 3
 
-A entidade da Fase 3 permite `AGUARDANDO_APROVACAO → APROVADA → EM_EXECUCAO`; a recusa (`reprovar`) termina em `FINALIZADA`. Na Fase 4, o pagamento passa a ser pré-requisito da execução e recusa/expiração devem seguir a política de cancelamento e compensação aprovada. Não copiar essas regras sem adaptação.
+Na Fase 3, `AGUARDANDO_APROVACAO → APROVADA → EM_EXECUCAO` e a recusa termina em `FINALIZADA`. Na Fase 4 o pagamento é pré-requisito da execução e recusa ou expiração levam a `CANCELADA` com compensação. Não copiar as regras da Fase 3 sem adaptar.
 
-## 4. Concorrência e lock otimista
+## 4. Concorrência e lock otimista (Reread Value)
 
-A OS é o agregado. O lock deve ficar no repositório PostgreSQL do OS Service, na operação transacional que consome o evento e aplica a transição. Adicionar à tabela da OS uma coluna `version` inteira, inicializada em `1`.
-
-A atualização compara a versão lida e incrementa atomicamente:
+O lock otimista da OS é o padrão **Reread Value** do ADR-0011: reler o valor antes de atualizar e abortar se a versão mudou, o que evita a atualização perdida (*lost update*). A OS é o agregado e a coluna `version` (inteira, inicial `1`) fica na tabela da OS, no PostgreSQL do OS Service.
 
 ```sql
 UPDATE ordens_servico
@@ -94,13 +104,13 @@ WHERE id = :os_id
   AND status = :status_esperado;
 ```
 
-- **Uma linha atualizada:** a transição venceu. Persistir também a etapa da Saga e o registro de idempotência na mesma transação.
-- **Nenhuma linha atualizada:** houve concorrência ou a guarda deixou de valer. Reler o agregado e revalidar a mensagem; não sobrescrever o estado atual. Tentar novamente com limite definido ou encaminhar conforme a política de retry/DLQ.
-- Não manter a transação do banco aberta durante chamadas ao RabbitMQ ou a APIs externas. A publicação confiável requer uma decisão de implementação, como uma outbox transacional, a ser registrada no desenho técnico.
+- **Uma linha atualizada:** a transição venceu. Gravar a etapa da saga e o registro de idempotência na mesma transação.
+- **Nenhuma linha atualizada:** outro consumidor alterou a OS. Reler o agregado e revalidar a mensagem pela regra 3. Não sobrescrever. Repetir com limite de tentativas.
+- Não manter a transação aberta durante chamada ao RabbitMQ ou API externa. Publicação confiável por outbox transacional (ver ADR-0011).
 
 ## 5. Idempotência de mensagens
 
-O OS Service guarda os `messageId` processados em tabela própria no PostgreSQL, por exemplo:
+Segue a regra transacional do contrato v1.1 para serviços Postgres: o `messageId` é inserido **dentro** da transação que aplica os efeitos.
 
 ```text
 mensagens_processadas
@@ -110,29 +120,24 @@ mensagens_processadas
 └── processado_em TIMESTAMP NOT NULL
 ```
 
-### Fluxo de consumo proposto
+### Fluxo de consumo
 
-1. Iniciar uma transação e inserir o `messageId` com restrição única. Se já existir um ID confirmado, descartar como duplicata sem repetir efeitos.
-2. Validar saga, estado e identificadores vigentes; aplicar a transição com controle de `version`.
-3. Persistir estado do agregado, etapa da Saga e intenção de saída (por exemplo, em uma outbox) na mesma transação.
-4. Confirmar a transação e só então enviar ACK ao RabbitMQ.
+1. Abrir transação e inserir o `messageId`. Se já existir, descartar como duplicata e confirmar a mensagem.
+2. Validar saga, estado e recurso vigente (regra 1) e aplicar a transição com `version` (seção 4).
+3. Gravar estado, etapa da saga e intenção de saída (outbox) na mesma transação.
+4. Fazer commit e só então enviar ACK.
 
-### Falhas e retry
+### Falhas
 
-Erros transitórios, indisponibilidade do banco ou colisões de versão que exijam reavaliação devem causar **rollback**, inclusive da inserção do `messageId`, para permitir reprocessamento. Após reler o agregado, revalidar antes de tentar novamente.
+- **Erro transitório** (banco fora, colisão de versão): rollback, inclusive do `messageId`, e novo processamento.
+- **Mensagem obsoleta ou de outra saga:** descartar, registrar em log e confirmar (regra 3).
+- **Campo acessório inválido:** corrigir e registrar em log. **Campo essencial inválido:** publicar evento de falha do passo.
+- **DLQ:** só para mensagem que não pode ser interpretada.
 
-Mensagens inválidas/obsoletas devem seguir a política acordada: se forem descartadas definitivamente, registrar essa disposição e confirmar sem aplicar efeitos; se exigirem retry/DLQ, não deixar um marcador confirmado que faça uma tentativa futura ser descartada como duplicata. A disposição deve ser auditável.
+## 6. Pendências de implementação
 
-> **Pendente:** definir quais erros permitem retry, quais são descarte permanente/DLQ e como alinhar ACK/NACK com o commit local.
+Não bloqueiam a tabela. Ficam para o PR de código.
 
-## 6. Decisões pendentes
-
-- [ ] Definir evento, payload e origem dos itens de diagnóstico enviados ao orquestrador.
-- [ ] Diferenciar falha na geração do orçamento de recusa do cliente.
-- [ ] Definir topologia TTL/DLX e qual componente publica `aprovacao.expirada` após a expiração.
-- [ ] Especificar payloads e uso de `CancelarOS`, `CancelarExecucao` e `os.finalizada`.
-- [ ] Confirmar os gatilhos de aprovação, pagamento, início e conclusão da execução.
-- [ ] Definir timeouts/retries por etapa, política para eventos inválidos/DLQ e quando confirmar `messageId` descartados permanentemente.
-- [ ] Definir como a fase de compensação bloqueia eventos de sucesso concorrentes e quando a OS passa para `CANCELADA`.
-- [ ] Definir política de cancelamento pelo cliente, estados elegíveis e idempotência externa da cobrança.
-- [ ] Validar as guardas com Roberta, Gustavo e David antes de aprovar o documento.
+- [ ] Endpoint e ator da ação de concluir diagnóstico (T2) e de entregar (T12).
+- [ ] Limite e intervalo de retries na colisão de `version`.
+- [ ] Desenho da outbox (ADR-0011).
