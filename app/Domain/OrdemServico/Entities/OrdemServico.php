@@ -85,6 +85,7 @@ class OrdemServico implements \JsonSerializable
     /** T4: AGUARDANDO_ORCAMENTO → CANCELADA (orcamento.falhou) */
     public function cancelarPorFalhaOrcamento(): void
     {
+        $this->exigirOrigem(StatusOrdem::AGUARDANDO_ORCAMENTO, 'cancelarPorFalhaOrcamento');
         $this->transitarPara(StatusOrdem::CANCELADA);
     }
 
@@ -97,6 +98,7 @@ class OrdemServico implements \JsonSerializable
     /** T6: AGUARDANDO_APROVACAO → CANCELADA (orcamento.recusado / aprovacao.expirada) */
     public function cancelarPorRecusaOrcamento(): void
     {
+        $this->exigirOrigem(StatusOrdem::AGUARDANDO_APROVACAO, 'cancelarPorRecusaOrcamento');
         $this->transitarPara(StatusOrdem::CANCELADA);
     }
 
@@ -116,6 +118,7 @@ class OrdemServico implements \JsonSerializable
     /** T9: AGUARDANDO_PAGAMENTO → CANCELADA (pagamento.recusado) */
     public function cancelarPorFalhaPagamento(): void
     {
+        $this->exigirOrigem(StatusOrdem::AGUARDANDO_PAGAMENTO, 'cancelarPorFalhaPagamento');
         $this->transitarPara(StatusOrdem::CANCELADA);
     }
 
@@ -129,6 +132,7 @@ class OrdemServico implements \JsonSerializable
     /** T11: EM_EXECUCAO → CANCELADA (execucao.falhou) */
     public function cancelarPorFalhaExecucao(): void
     {
+        $this->exigirOrigem(StatusOrdem::EM_EXECUCAO, 'cancelarPorFalhaExecucao');
         $this->transitarPara(StatusOrdem::CANCELADA);
     }
 
@@ -211,5 +215,14 @@ class OrdemServico implements \JsonSerializable
     public function jsonSerialize(): array
     {
         return $this->toArray();
+    }
+
+    private function exigirOrigem(string $esperado, string $metodo): void
+    {
+        if (!$this->status->equals($esperado)) {
+            throw new \DomainException(
+                "{$metodo}() exige origem {$esperado}, mas a OS esta em {$this->status->value()}"
+            );
+        }
     }
 }
