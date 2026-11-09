@@ -11,11 +11,8 @@ use App\Domain\OrdemServico\Entities\OrdemServico;
  */
 interface OrdemServicoRepositoryInterface
 {
-    public function findById(int $id): ?OrdemServico;
+    public function findById(string $id): ?OrdemServico;
     public function findAll(): array;
-    public function findByCliente(int $clienteId): array;
-    public function findRecebidas24Horas(): array;
-    public function tempoMedioExecucao(): array;
     public function save(OrdemServico $ordem): OrdemServico;
-    public function delete(int $id): void;
+    public function delete(string $id): void;
 }
