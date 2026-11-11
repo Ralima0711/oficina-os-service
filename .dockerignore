@@ -1,0 +1,14 @@
+# O .env local tem credencial de verdade e nao pode entrar na imagem.
+# O vendor/ vem do composer install la dentro, com --no-dev; copiar o de fora
+# traz os pacotes de dev e deixa a camada do composer sem efeito.
+.git
+.env
+.env.*
+!.env.example
+vendor
+node_modules
+storage/logs/*
+storage/framework/cache/*
+storage/framework/sessions/*
+storage/framework/views/*
+bootstrap/cache/*
