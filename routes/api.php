@@ -1,6 +1,8 @@
 <?php
 
+use App\Http\Controllers\ClienteController;
 use App\Http\Controllers\OrdemServicoController;
+use App\Http\Controllers\VeiculoController;
 use Illuminate\Support\Facades\Route;
 
 /*
@@ -18,9 +20,11 @@ use Illuminate\Support\Facades\Route;
  *   POST /api/ordens-servico/{id}/diagnostico  fecha o diagnostico e INICIA A SAGA
  *   GET  /api/ordens-servico/{id}              estado atual, para acompanhar
  *
- * Os prefixos /api/clientes e /api/veiculos, marcados A CONFIRMAR no Kong,
- * continuam fora: cliente e veiculo sao da API da Fase 3, e este servico so
- * guarda os ids.
+ * /api/clientes e /api/veiculos tambem sao deste servico, e nao da API da Fase
+ * 3: o ADR-0007 decidiu em 20/10 que "cliente e veiculo ficam no OS Service,
+ * nao em um quarto servico". A decisao estava registrada e o recorte parou no
+ * scaffolding — entidades e value objects existiam, sem tabela, sem
+ * repositorio, sem rota e sem teste.
  */
 
 Route::post('ordens-servico', [OrdemServicoController::class, 'store'])
@@ -31,3 +35,15 @@ Route::post('ordens-servico/{id}/diagnostico', [OrdemServicoController::class, '
 
 Route::get('ordens-servico/{id}', [OrdemServicoController::class, 'show'])
     ->name('ordens-servico.show');
+
+// ----------------------------------------------------------------- Cliente
+Route::get('clientes', [ClienteController::class, 'index'])->name('clientes.index');
+Route::post('clientes', [ClienteController::class, 'store'])->name('clientes.store');
+Route::get('clientes/{id}', [ClienteController::class, 'show'])->name('clientes.show');
+Route::put('clientes/{id}', [ClienteController::class, 'update'])->name('clientes.update');
+
+// ----------------------------------------------------------------- Veiculo
+// O index aceita ?clienteId= para listar so os veiculos de um cliente.
+Route::get('veiculos', [VeiculoController::class, 'index'])->name('veiculos.index');
+Route::post('veiculos', [VeiculoController::class, 'store'])->name('veiculos.store');
+Route::get('veiculos/{id}', [VeiculoController::class, 'show'])->name('veiculos.show');
