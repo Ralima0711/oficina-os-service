@@ -19,7 +19,7 @@ use Illuminate\Support\Facades\DB;
  *
  * Duas condicoes, e so essas duas, sao aceitas:
  *
- *   - Postgres cujo nome de banco termine em `_test`
+ *   - Postgres cujo nome de banco termine em `_test` ou `_teste`
  *   - nada mais
  *
  * SQLite nao serve para quem usa este trait: as colunas sao `uuid` e no SQLite
@@ -41,11 +41,14 @@ trait ExigeBancoDeTeste
             );
         }
 
-        if (! str_ends_with($banco, '_test')) {
+        // `_test` e `_teste`: o pipeline reutilizavel do infra sobe o Postgres
+        // com POSTGRES_DB=oficina_teste, e o repositorio e todo em portugues.
+        if (! str_ends_with($banco, '_test') && ! str_ends_with($banco, '_teste')) {
             $this->fail(
                 "RECUSADO: a suite ia rodar migrate:fresh no banco '{$banco}', que nao "
                 . "termina em '_test'. O RefreshDatabase DERRUBA todas as tabelas. "
-                . 'Use um banco dedicado, por exemplo DB_DATABASE=' . $banco . '_test.'
+                . 'Use um banco dedicado, terminado em _test ou _teste. '
+                . 'Por exemplo DB_DATABASE=' . $banco . '_test.'
             );
         }
     }

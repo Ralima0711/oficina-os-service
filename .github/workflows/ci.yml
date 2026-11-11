@@ -1,0 +1,72 @@
+name: CI/CD
+
+# O OS Service nao tinha CI nenhuma ate 12/11, e o PDF da entrega afirmava que
+# os tres servicos chamavam o pipeline reutilizavel. Nao chamavam: o
+# ci-cd-servico.yml vive no oficina-infra-fase4 e nao era chamado por ninguem.
+# Pipeline que existe e nao roda e o mesmo problema da Fase 3 em outra forma.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  ci:
+    uses: Ralima0711/oficina-infra-fase4/.github/workflows/ci-cd-servico.yml@main
+    with:
+      servico: os-service
+      php-version: "8.4"
+
+      # As tres pelo mesmo motivo que estao no Dockerfile, medido no
+      # composer.lock: pdo_pgsql para o Postgres, bcmath porque o
+      # php-amqplib 2.8 declara ext-bcmath, pcntl para o SIGTERM dos workers.
+      # pdo_sqlite continua porque parte da suite roda em memoria.
+      extensoes: "mbstring, pdo_sqlite, pdo_pgsql, bcmath, pcntl"
+
+      # pgsql e nao sqlite: SagaOutboxTest e OrdemServicoApiTest EXIGEM Postgres
+      # — as colunas sao `uuid` e no SQLite `uuid()` vira texto solto, que foi
+      # justamente o que deixou 12 testes vermelhos passarem por verdes. Sem
+      # isto aqui os dois pulam com aviso e a cobertura despenca.
+      #
+      # O banco e o oficina_teste do pipeline, e o trait ExigeBancoDeTeste
+      # aceita nome terminado em _test ou _teste: o RefreshDatabase roda
+      # migrate:fresh, e isso nunca pode acontecer num banco que nao seja de
+      # teste.
+      db-connection: pgsql
+
+      # 55, porque e o que a suite MEDE hoje: 55.6% em 12/11, com pcov.
+      #
+      # Numero baixo por um motivo concreto, nao por suite fraca: os dominios
+      # Cliente e Veiculo (8 arquivos, com Cpf, Cnpj, Placa e DocumentoFiscal)
+      # estao em 0% porque nao sao referenciados por NADA fora de si mesmos —
+      # nenhum controller, nenhuma implementacao de repositorio, nenhuma rota,
+      # nenhum teste. E scaffolding da decomposicao da Fase 3 que ficou para
+      # tras. O Models/User e o AppServiceProvider, idem.
+      #
+      # O que a suite de fato exercita esta bem coberto: controller e requests
+      # 100%, EloquentOrdemServicoRepository 92.6%, StatusOrdem 81.8%,
+      # OrdemServico 74.4%.
+      #
+      # Gate no valor medido segura regressao a partir de hoje. Subir o numero
+      # passa por decidir o que fazer com o codigo morto — excluir da medicao
+      # seria maquiar a metrica; remover resolve de verdade.
+      cobertura-minima: 55
+
+      # Vazio enquanto nao existe projeto no SonarCloud. O job inteiro e
+      # pulado, em vez de falhar por falta de token.
+      sonar-project-key: ""
+
+      imagem: ralima0711/oficina-os-service
+      manifestos: k8s/os-service
+      # Deploy so quando a janela do lab estiver de pe e os secrets validos.
+      deploy: false
+    secrets:
+      DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+      DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+      SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+      AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+      AWS_SESSION_TOKEN: ${{ secrets.AWS_SESSION_TOKEN }}
+      KUBECONFIG: ${{ secrets.KUBECONFIG }}
