@@ -1,5 +1,6 @@
 <?php
 
+use Monolog\Formatter\JsonFormatter;
 use Monolog\Handler\NullHandler;
 use Monolog\Handler\StreamHandler;
 use Monolog\Handler\SyslogUdpHandler;
@@ -110,6 +111,32 @@ return [
             'level' => env('LOG_LEVEL', 'debug'),
             'facility' => env('LOG_SYSLOG_FACILITY', LOG_USER),
             'replace_placeholders' => true,
+        ],
+
+        // Log do container vai para o stdout, em JSON.
+        //
+        // O default do Laravel e 'stack' -> 'single', que escreve em
+        // storage/logs/laravel.log DENTRO do container. Na pratica isso
+        // significa que `docker logs` e `kubectl logs` nao mostram nada e o
+        // New Relic nao coleta nada: o log existe e ninguem ve. Foi o que
+        // aconteceu em 11/11 — o worker do billing consumiu uma mensagem e o
+        // `docker compose logs` dele estava vazio.
+        //
+        // JSON e nao texto porque o coletor precisa de campos, nao de linha
+        // solta. Mesmo canal que a Execucao ja usava; ela ainda enriquece com
+        // um processor proprio de contexto (trace), que vale trazer para ca
+        // numa proxima passada.
+        'stdout_json' => [
+            'driver' => 'monolog',
+            'level' => env('LOG_LEVEL', 'info'),
+            'handler' => StreamHandler::class,
+            'handler_with' => [
+                'stream' => 'php://stdout',
+            ],
+            'formatter' => JsonFormatter::class,
+            'processors' => [
+                PsrLogMessageProcessor::class,
+            ],
         ],
 
         'errorlog' => [

@@ -9,6 +9,7 @@ use App\Domain\OrdemServico\Repositories\OrdemServicoRepositoryInterface;
 use App\Domain\OrdemServico\ValueObjects\StatusOrdem;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
+use Tests\ExigeBancoDeTeste;
 use Tests\TestCase;
 
 /**
@@ -21,6 +22,7 @@ use Tests\TestCase;
  */
 class SagaOutboxTest extends TestCase
 {
+    use ExigeBancoDeTeste;
     use RefreshDatabase;
 
     private Orchestrator $saga;
@@ -29,16 +31,44 @@ class SagaOutboxTest extends TestCase
     protected function setUp(): void
     {
         parent::setUp();
+
+        // Postgres de verdade, e num banco DEDICADO: o RefreshDatabase roda
+        // migrate:fresh, que derruba todas as tabelas da conexao ativa.
+        $this->exigirBancoDeTeste();
+
         $this->saga = app(Orchestrator::class);
         $this->repo = app(OrdemServicoRepositoryInterface::class);
+    }
+
+    /** Id de verdade: as colunas sao uuid, e o Postgres cobra isso. */
+    private function uuid(): string
+    {
+        return \Ramsey\Uuid\Uuid::uuid4()->toString();
+    }
+
+    /**
+     * Rotulo legivel -> UUID estavel.
+     *
+     * As colunas sao `uuid` e o Postgres cobra o tipo, mas o teste precisa que
+     * $this->id('o-1') no evento de orcamento gerado seja o MESMO id no evento de
+     * aprovacao: e o que o exigirOrcamentoVigente compara. UUID aleatorio a
+     * cada chamada quebraria essa ligacao. uuid5 e deterministico — mesmo
+     * rotulo, mesmo UUID — e rotulos diferentes nunca colidem.
+     *
+     * Mantem o rotulo visivel no corpo do teste, que e o que torna o cenario
+     * legivel, sem mentir para o banco sobre o tipo.
+     */
+    private function id(string $rotulo): string
+    {
+        return \Ramsey\Uuid\Uuid::uuid5(\Ramsey\Uuid\Uuid::NAMESPACE_OID, $rotulo)->toString();
     }
 
     // ── Preparação ─────────────────────────────────────────────────
 
     private function osAguardandoOrcamento(): array
     {
-        $os = OrdemServico::criar('c-1', 'DEM1A23', 'Barulho no freio');
-        $os->iniciarDiagnostico('m-1');
+        $os = OrdemServico::criar($this->uuid(), $this->uuid(), 'Barulho no freio');
+        $os->iniciarDiagnostico($this->uuid());
         $os->setDiagnostico('Pastilhas no limite');
         $this->repo->save($os);
 
@@ -83,8 +113,8 @@ class SagaOutboxTest extends TestCase
 
     public function test_nada_e_gravado_no_outbox_se_a_transacao_falhar(): void
     {
-        $os = OrdemServico::criar('c-1', 'DEM1A23', 'x');
-        $os->iniciarDiagnostico('m-1');
+        $os = OrdemServico::criar($this->uuid(), $this->uuid(), 'x');
+        $os->iniciarDiagnostico($this->uuid());
         // Sem diagnóstico: concluirDiagnostico() vai lançar dentro da transação.
         $this->repo->save($os);
 
@@ -108,15 +138,35 @@ class SagaOutboxTest extends TestCase
     public function test_outbox_recusa_gravacao_fora_de_transacao(): void
     {
         $outbox = app(\App\Application\Saga\Outbox::class);
+        $osId = $this->uuid();
 
-        $this->expectException(\LogicException::class);
-        $this->expectExceptionMessage('dentro de uma transação');
+        // O RefreshDatabase embrulha CADA teste numa transacao, entao aqui
+        // dentro DB::transactionLevel() nunca e 0 e o guard do Outbox — que e
+        // justamente o que este teste existe para provar — nao dispararia
+        // nunca. Este teste nao podia passar, independente de qualquer outro
+        // defeito. Sai-se da transacao do harness so para a asserção e
+        // volta-se em seguida, senao o teardown do RefreshDatabase quebra.
+        $nivel = DB::transactionLevel();
 
-        $outbox->comando(
-            'billing.gerar-orcamento',
-            Envelope::create('GerarOrcamento', ['osId' => 'x'], 'saga-1'),
-            'x'
-        );
+        for ($i = 0; $i < $nivel; $i++) {
+            DB::rollBack();
+        }
+
+        try {
+            $outbox->comando(
+                'billing.gerar-orcamento',
+                Envelope::create('GerarOrcamento', ['osId' => $osId], $this->uuid()),
+                $osId
+            );
+
+            $this->fail('Outbox devia recusar gravacao fora de transacao');
+        } catch (\LogicException $e) {
+            $this->assertStringContainsString('dentro de uma transação', $e->getMessage());
+        } finally {
+            for ($i = 0; $i < $nivel; $i++) {
+                DB::beginTransaction();
+            }
+        }
     }
 
     // ── Idempotência ───────────────────────────────────────────────
@@ -127,7 +177,7 @@ class SagaOutboxTest extends TestCase
 
         $evento = $this->evento('orcamento.gerado', $sagaId, [
             'osId' => $osId,
-            'orcamentoId' => 'o-1',
+            'orcamentoId' => $this->id('o-1'),
             'valorTotal' => 241.80,
         ]);
 
@@ -151,8 +201,8 @@ class SagaOutboxTest extends TestCase
         // pagamento.confirmado em AGUARDANDO_ORCAMENTO: fora de ordem.
         $this->saga->onPagamentoConfirmado($this->evento('pagamento.confirmado', $sagaId, [
             'osId' => $osId,
-            'pagamentoId' => 'p-1',
-            'orcamentoId' => 'o-1',
+            'pagamentoId' => $this->id('p-1'),
+            'orcamentoId' => $this->id('o-1'),
         ]));
 
         $this->assertSame(
@@ -169,12 +219,12 @@ class SagaOutboxTest extends TestCase
         [$osId, $sagaId] = $this->osAguardandoOrcamento();
 
         $this->saga->onOrcamentoGerado($this->evento('orcamento.gerado', $sagaId, [
-            'osId' => $osId, 'orcamentoId' => 'o-2', 'valorTotal' => 300.0,
+            'osId' => $osId, 'orcamentoId' => $this->id('o-2'), 'valorTotal' => 300.0,
         ]));
 
         // Expiração chegando tarde, falando do orçamento anterior.
         $this->saga->onAprovacaoExpirada($this->evento('aprovacao.expirada', $sagaId, [
-            'osId' => $osId, 'orcamentoId' => 'o-1', 'expirouEm' => '2026-11-01T00:00:00Z',
+            'osId' => $osId, 'orcamentoId' => $this->id('o-1'), 'expirouEm' => '2026-11-01T00:00:00Z',
         ]));
 
         $this->assertSame(
@@ -188,7 +238,7 @@ class SagaOutboxTest extends TestCase
         [$osId] = $this->osAguardandoOrcamento();
 
         $this->saga->onOrcamentoGerado($this->evento('orcamento.gerado', (string) \Ramsey\Uuid\Uuid::uuid4(), [
-            'osId' => $osId, 'orcamentoId' => 'o-1', 'valorTotal' => 100.0,
+            'osId' => $osId, 'orcamentoId' => $this->id('o-1'), 'valorTotal' => 100.0,
         ]));
 
         $this->assertSame(
@@ -204,19 +254,19 @@ class SagaOutboxTest extends TestCase
         [$osId, $sagaId] = $this->osAguardandoOrcamento();
 
         $this->saga->onOrcamentoGerado($this->evento('orcamento.gerado', $sagaId, [
-            'osId' => $osId, 'orcamentoId' => 'o-1', 'valorTotal' => 241.80,
+            'osId' => $osId, 'orcamentoId' => $this->id('o-1'), 'valorTotal' => 241.80,
         ]));
 
         $this->saga->onOrcamentoAprovado($this->evento('orcamento.aprovado', $sagaId, [
-            'osId' => $osId, 'orcamentoId' => 'o-1', 'decidioEm' => '2026-11-09T10:00:00Z',
+            'osId' => $osId, 'orcamentoId' => $this->id('o-1'), 'decidioEm' => '2026-11-09T10:00:00Z',
         ]));
 
         $this->saga->onPagamentoConfirmado($this->evento('pagamento.confirmado', $sagaId, [
-            'osId' => $osId, 'orcamentoId' => 'o-1', 'pagamentoId' => 'p-1', 'valorPago' => 241.80,
+            'osId' => $osId, 'orcamentoId' => $this->id('o-1'), 'pagamentoId' => $this->id('p-1'), 'valorPago' => 241.80,
         ]));
 
         $this->saga->onExecucaoConcluida($this->evento('execucao.concluida', $sagaId, [
-            'osId' => $osId, 'execucaoId' => 'e-1',
+            'osId' => $osId, 'execucaoId' => $this->id('e-1'),
         ]));
 
         $this->assertSame(
@@ -242,17 +292,17 @@ class SagaOutboxTest extends TestCase
         [$osId, $sagaId] = $this->osAguardandoOrcamento();
 
         $this->saga->onOrcamentoGerado($this->evento('orcamento.gerado', $sagaId, [
-            'osId' => $osId, 'orcamentoId' => 'o-1', 'valorTotal' => 241.80,
+            'osId' => $osId, 'orcamentoId' => $this->id('o-1'), 'valorTotal' => 241.80,
         ]));
         $this->saga->onOrcamentoAprovado($this->evento('orcamento.aprovado', $sagaId, [
-            'osId' => $osId, 'orcamentoId' => 'o-1',
+            'osId' => $osId, 'orcamentoId' => $this->id('o-1'),
         ]));
         $this->saga->onPagamentoConfirmado($this->evento('pagamento.confirmado', $sagaId, [
-            'osId' => $osId, 'orcamentoId' => 'o-1', 'pagamentoId' => 'p-1',
+            'osId' => $osId, 'orcamentoId' => $this->id('o-1'), 'pagamentoId' => $this->id('p-1'),
         ]));
 
         $this->saga->onExecucaoFalhou($this->evento('execucao.falhou', $sagaId, [
-            'osId' => $osId, 'execucaoId' => 'e-1', 'motivo' => 'peca_indisponivel',
+            'osId' => $osId, 'execucaoId' => $this->id('e-1'), 'motivo' => 'peca_indisponivel',
         ]));
 
         $this->assertSame(
@@ -274,14 +324,14 @@ class SagaOutboxTest extends TestCase
         [$osId, $sagaId] = $this->osAguardandoOrcamento();
 
         $this->saga->onOrcamentoGerado($this->evento('orcamento.gerado', $sagaId, [
-            'osId' => $osId, 'orcamentoId' => 'o-1', 'valorTotal' => 241.80,
+            'osId' => $osId, 'orcamentoId' => $this->id('o-1'), 'valorTotal' => 241.80,
         ]));
         $this->saga->onOrcamentoAprovado($this->evento('orcamento.aprovado', $sagaId, [
-            'osId' => $osId, 'orcamentoId' => 'o-1',
+            'osId' => $osId, 'orcamentoId' => $this->id('o-1'),
         ]));
 
         $this->saga->onPagamentoRecusado($this->evento('pagamento.recusado', $sagaId, [
-            'osId' => $osId, 'orcamentoId' => 'o-1', 'motivo' => 'cc_rejected',
+            'osId' => $osId, 'orcamentoId' => $this->id('o-1'), 'motivo' => 'cc_rejected',
         ]));
 
         $this->assertSame(
@@ -320,8 +370,8 @@ class SagaOutboxTest extends TestCase
 
     public function test_saga_sem_itens_diagnosticados_nao_inicia(): void
     {
-        $os = OrdemServico::criar('c-1', 'DEM1A23', 'x');
-        $os->iniciarDiagnostico('m-1');
+        $os = OrdemServico::criar($this->uuid(), $this->uuid(), 'x');
+        $os->iniciarDiagnostico($this->uuid());
         $os->setDiagnostico('Nada a reparar');
         $this->repo->save($os);
 

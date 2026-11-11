@@ -13,8 +13,12 @@ class OrdemServicoModel extends Model
     public $incrementing = false;
     protected $keyType = 'string';
 
-    protected const CREATED_AT = 'criada_em';
-    protected const UPDATED_AT = 'atualizada_em';
+    // public, nao protected: o Model do Eloquent declara as duas como
+    // `public const`, e PHP nao deixa a subclasse estreitar a visibilidade —
+    // e erro fatal no carregamento da classe, nao aviso. Ficou escondido
+    // enquanto o insert() era inalcancavel e o update usava DB::table().
+    public const CREATED_AT = 'criada_em';
+    public const UPDATED_AT = 'atualizada_em';
 
     protected $fillable = [
         'id',
