@@ -2,7 +2,9 @@
 
 namespace App\Application\Messaging;
 
+use PhpAmqpLib\Channel\AMQPChannel;
 use PhpAmqpLib\Connection\AMQPStreamConnection;
+use PhpAmqpLib\Exception\AMQPProtocolChannelException;
 use PhpAmqpLib\Message\AMQPMessage;
 use PhpAmqpLib\Wire\AMQPTable;
 
@@ -11,6 +13,25 @@ use PhpAmqpLib\Wire\AMQPTable;
  *
  * Comandos → fila direta (point-to-point).
  * Eventos  → exchange oficina.eventos (pub-sub, routing key = tipo).
+ *
+ * Este publicador NAO cria topologia. A topologia vive num lugar so, o
+ * rabbitmq/definitions.json do oficina-infra-fase4, que o compose monta e o
+ * cluster recebe por ConfigMap. Aqui so se CONFERE que ela existe, com declare
+ * passivo — igual ao que o MessageConsumer ja fazia.
+ *
+ * Antes daqui o publishCommand fazia declare ATIVO:
+ *
+ *     $channel->queue_declare($queue, false, true, false, false);
+ *
+ * As filas de comando existem com x-dead-letter-exchange e
+ * x-dead-letter-routing-key. Redeclarar sem esses argumentos e
+ * PRECONDITION_FAILED 406 em AMQP, entao TODA publicacao de comando falhava e
+ * a saga nunca saia do primeiro passo. O outbox segurava a mensagem, tentava
+ * ate o teto e alertava — fazendo o papel dele, mas o comando nao chegava.
+ *
+ * O declare passivo tambem protege contra o erro mais silencioso desta
+ * arquitetura: publicar numa fila com nome errado. No exchange default, uma
+ * mensagem para fila inexistente e descartada sem erro nenhum.
  */
 class MessagePublisher
 {
@@ -32,7 +53,7 @@ class MessagePublisher
     {
         $channel = $this->channel();
 
-        $channel->queue_declare($queue, false, true, false, false);
+        $this->exigirFila($channel, $queue);
 
         $msg = new AMQPMessage(
             $envelope->toJson(),
@@ -58,13 +79,7 @@ class MessagePublisher
     {
         $channel = $this->channel();
 
-        $channel->exchange_declare(
-            $this->exchange,
-            'topic',
-            false,
-            true,
-            false
-        );
+        $this->exigirExchange($channel);
 
         $msg = new AMQPMessage(
             $envelope->toJson(),
@@ -81,6 +96,36 @@ class MessagePublisher
 
         $channel->basic_publish($msg, $this->exchange, $envelope->getType());
         $channel->close();
+    }
+
+    /**
+     * Declaracao passiva: confere que a fila existe, sem tentar cria-la nem
+     * opinar sobre os argumentos dela.
+     */
+    private function exigirFila(AMQPChannel $channel, string $queue): void
+    {
+        try {
+            $channel->queue_declare($queue, true);
+        } catch (AMQPProtocolChannelException $e) {
+            throw new TopologiaAusente(
+                "Fila {$queue} nao existe neste broker. A topologia vem do "
+                . 'rabbitmq/definitions.json no oficina-infra-fase4.',
+                previous: $e
+            );
+        }
+    }
+
+    private function exigirExchange(AMQPChannel $channel): void
+    {
+        try {
+            $channel->exchange_declare($this->exchange, 'topic', true);
+        } catch (AMQPProtocolChannelException $e) {
+            throw new TopologiaAusente(
+                "Exchange {$this->exchange} nao existe neste broker. A topologia "
+                . 'vem do rabbitmq/definitions.json no oficina-infra-fase4.',
+                previous: $e
+            );
+        }
     }
 
     private function amqpTable(Envelope $envelope): array
@@ -108,4 +153,15 @@ class MessagePublisher
             $this->connection->close();
         }
     }
+}
+
+/**
+ * Topologia ausente no broker.
+ *
+ * Nao e transitorio: tentar de novo nao faz a fila aparecer. O OutboxPublisher
+ * conta a tentativa, e depois do teto a linha fica travada com o motivo escrito
+ * em ultimo_erro — que e onde um alerta deve olhar.
+ */
+class TopologiaAusente extends \RuntimeException
+{
 }

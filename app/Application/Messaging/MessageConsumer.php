@@ -156,9 +156,28 @@ class MessageConsumer
         }
     }
 
+    /**
+     * Delivery tag da mensagem.
+     *
+     * NAO use $msg->getDeliveryTag(): esse metodo so existe no php-amqplib 3.x
+     * e este servico esta no ^2.8. No 2.x o canal preenche delivery_info na
+     * entrega, e delivery_info e propriedade DECLARADA em GenericContent, a
+     * classe pai — nao e propriedade dinamica, entao nao ha deprecation no PHP
+     * 8.4.
+     *
+     * Terceira vez que a divergencia de versao morde: antes foram
+     * is_consuming() e este. O billing e a execucao estao no ^3.7. Alinhar os
+     * tres numa proxima fase resolve a classe inteira de uma vez; ate la, este
+     * ponto unico evita espalhar a diferenca pelo arquivo.
+     */
+    private function tagDe(AMQPMessage $msg): int
+    {
+        return (int) $msg->delivery_info['delivery_tag'];
+    }
+
     private function tratar(AMQPMessage $msg, Closure $handler, AMQPChannel $channel): void
     {
-        $tag = $msg->getDeliveryTag();
+        $tag = $this->tagDe($msg);
         $messageId = null;
 
         try {
@@ -222,7 +241,7 @@ class MessageConsumer
                 'tentativas' => $feitas,
                 'erro' => $e->getMessage(),
             ]);
-            $channel->basic_nack($msg->getDeliveryTag(), false, false);
+            $channel->basic_nack($this->tagDe($msg), false, false);
             return;
         }
 
@@ -234,7 +253,7 @@ class MessageConsumer
         ]);
 
         sleep(self::ESPERA_SEGUNDOS);
-        $channel->basic_nack($msg->getDeliveryTag(), false, true);
+        $channel->basic_nack($this->tagDe($msg), false, true);
     }
 
     /** Colisão de version é transitória: outro consumidor venceu, vale tentar de novo. */

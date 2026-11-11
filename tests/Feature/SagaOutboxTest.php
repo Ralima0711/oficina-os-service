@@ -9,6 +9,7 @@ use App\Domain\OrdemServico\Repositories\OrdemServicoRepositoryInterface;
 use App\Domain\OrdemServico\ValueObjects\StatusOrdem;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
+use Tests\ExigeBancoDeTeste;
 use Tests\TestCase;
 
 /**
@@ -21,6 +22,7 @@ use Tests\TestCase;
  */
 class SagaOutboxTest extends TestCase
 {
+    use ExigeBancoDeTeste;
     use RefreshDatabase;
 
     private Orchestrator $saga;
@@ -30,17 +32,9 @@ class SagaOutboxTest extends TestCase
     {
         parent::setUp();
 
-        // Este teste so vale contra Postgres. No SQLite, `uuid()` da migration
-        // vira texto solto e tudo passa — inclusive id que nao e UUID e
-        // transacao que o SQLite trata diferente. Passar aqui sem o Postgres
-        // nao prova nada, entao e melhor pular com aviso do que ficar verde a
-        // toa. Foi exatamente assim que as fixtures com 'm-1' sobreviveram.
-        if (DB::connection()->getDriverName() !== 'pgsql') {
-            $this->markTestSkipped(
-                'SagaOutboxTest exige Postgres (DB_CONNECTION=pgsql). '
-                . 'No SQLite ele passaria sem validar tipo de coluna nem transacao.'
-            );
-        }
+        // Postgres de verdade, e num banco DEDICADO: o RefreshDatabase roda
+        // migrate:fresh, que derruba todas as tabelas da conexao ativa.
+        $this->exigirBancoDeTeste();
 
         $this->saga = app(Orchestrator::class);
         $this->repo = app(OrdemServicoRepositoryInterface::class);
