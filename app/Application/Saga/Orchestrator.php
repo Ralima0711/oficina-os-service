@@ -115,7 +115,7 @@ class Orchestrator
     /** orcamento.gerado → AGUARDANDO_APROVACAO. Nada é publicado: espera humana. */
     public function onOrcamentoGerado(Envelope $env): void
     {
-        $this->processar($env, StatusOrdem::AGUARDANDO_ORCAMENTO, function (OrdemServico $os, array $body) {
+        $this->processar($env, StatusOrdem::AGUARDANDO_ORCAMENTO, function (OrdemServico $os, array $body) use ($env) {
             $os->registrarOrcamentoGerado(
                 $body['orcamentoId'],
                 (float) $body['valorTotal'],

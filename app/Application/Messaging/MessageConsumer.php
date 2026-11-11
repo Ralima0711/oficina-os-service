@@ -116,7 +116,13 @@ class MessageConsumer
         );
 
         try {
-            while ($channel->is_consuming() && !$this->encerrar) {
+            // count($channel->callbacks), nao $channel->is_consuming():
+            // is_consuming() so existe no php-amqplib 3.x e este servico esta
+            // no ^2.8 (o billing e a execucao estao no ^3.7 — divergencia real,
+            // anotada para alinhar na proxima fase). callbacks e publico nas
+            // duas versoes e fica vazio quando o broker cancela o consumo,
+            // entao esta condicao vale nos dois majors.
+            while (count($channel->callbacks) > 0 && !$this->encerrar) {
                 $channel->wait();
             }
         } catch (Throwable $e) {

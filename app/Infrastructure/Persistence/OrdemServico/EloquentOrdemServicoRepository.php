@@ -33,7 +33,10 @@ class EloquentOrdemServicoRepository implements OrdemServicoRepositoryInterface
 
     public function save(OrdemServico $ordem): OrdemServico
     {
-        if ($ordem->getId() === null) {
+        // foiPersistida(), nao getId() === null: criar() ja gera o UUID, entao
+        // o id nunca e nulo e este if mandava todo save para o update — o
+        // insert() nunca rodava e OS nenhuma era gravada.
+        if (! $ordem->foiPersistida()) {
             return $this->insert($ordem);
         }
 
@@ -95,6 +98,9 @@ class EloquentOrdemServicoRepository implements OrdemServicoRepositoryInterface
             'concluida_em' => $ordem->getConcluidaEm()?->format('Y-m-d H:i:s'),
         ]);
 
+        // A partir daqui a linha existe: o proximo save desta instancia e update.
+        $ordem->marcarComoPersistida();
+
         return $ordem;
     }
 
@@ -102,7 +108,7 @@ class EloquentOrdemServicoRepository implements OrdemServicoRepositoryInterface
 
     private function toEntity(OrdemServicoModel $m): OrdemServico
     {
-        return new OrdemServico(
+        $ordem = new OrdemServico(
             id: $m->id,
             clienteId: $m->cliente_id,
             veiculoId: $m->veiculo_id,
@@ -120,5 +126,10 @@ class EloquentOrdemServicoRepository implements OrdemServicoRepositoryInterface
             atualizadaEm: $m->atualizada_em ? new \DateTimeImmutable($m->atualizada_em) : null,
             concluidaEm: $m->concluida_em ? new \DateTimeImmutable($m->concluida_em) : null,
         );
+
+        // Veio do banco: a linha existe, entao save() e update com lock.
+        $ordem->marcarComoPersistida();
+
+        return $ordem;
     }
 }
