@@ -5,23 +5,31 @@ namespace App\Infrastructure\ReadModel;
 use App\Application\ReadModel\RepositorioDeLeituraInterface;
 use Illuminate\Support\Facades\DB;
 use MongoDB\Collection;
+use MongoDB\Driver\Exception\BulkWriteException;
 
 /**
  * Read model no MongoDB (ADR-0009).
  *
  * Uma colecao, um documento por OS: status atual + historico.
  *
- * A idempotencia e por `messageId`, e e feita em UMA operacao: um
- * `updateOne` com upsert cujo filtro ja exclui o messageId que esta entrando
- * (`$ne`). A versao anterior lia o documento, decidia, e depois fazia tres
- * escritas separadas — com duas replicas do projetor, duas entregas
- * simultaneas passavam as duas pela verificacao e o historico duplicava. A
- * janela nao era teorica: e a mesma forma do `SELECT` seguido de `INSERT` que
- * o contrato de eventos ja proibe na cobranca, pelo mesmo motivo.
+ * A idempotencia e por `messageId`, e o filtro do update ja exclui o
+ * messageId que esta entrando (`$ne`). A versao anterior lia o documento,
+ * decidia, e depois fazia tres escritas separadas — com duas replicas do
+ * projetor, duas entregas simultaneas passavam as duas pela verificacao e o
+ * historico duplicava. A janela nao era teorica: e a mesma forma do `SELECT`
+ * seguido de `INSERT` que o contrato de eventos ja proibe na cobranca, pelo
+ * mesmo motivo.
  *
- * O indice unico em `osId` fecha a outra metade: sem ele, dois upserts
- * concorrentes para uma OS que ainda nao existe inserem dois documentos. Ele e
- * garantido no arranque do worker, nao a cada escrita.
+ * Sao duas escritas, e nao uma, porque o upsert nao serve para idempotencia:
+ * ele insere sempre que o filtro nao casa, e na reentrega o filtro nao casa
+ * justamente porque o messageId ja esta no documento. Com o indice unico em
+ * `osId`, isso virava 11000 — erro de escrita, nao reentrega — e o consumidor
+ * mandava para a DLQ um evento que ja estava aplicado.
+ *
+ * Entao: update sem upsert quando o documento existe; insert quando nao
+ * existe; e se o insert perder a corrida para o indice unico, o update e
+ * tentado de novo e nao faz nada. O indice unico em `osId` continua sendo o
+ * que garante um documento por OS, e e criado no arranque do worker.
  */
 class MongoRepositorioDeLeitura implements RepositorioDeLeituraInterface
 {
@@ -46,27 +54,92 @@ class MongoRepositorioDeLeitura implements RepositorioDeLeituraInterface
             $set['status'] = $evento['status'];
         }
 
-        $this->raw(fn (Collection $colecao) => $colecao->updateOne(
+        // Upsert NAO entra aqui. O filtro exclui o messageId que esta
+        // entrando, entao na reentrega ele nao casa — e upsert insere sempre
+        // que o filtro nao casa, sem olhar se o documento existe. O indice
+        // unico em osId recusaria com 11000, e como nao e LostUpdateException
+        // nem PDOException o consumidor mandaria para a DLQ um evento que ja
+        // estava aplicado.
+        //
+        // A escrita e o update, e so ele. Documento que nao existe nao e
+        // problema do update: quem cria e o insert abaixo.
+        $atualizado = $this->raw(fn (Collection $colecao) => $colecao->updateOne(
             [
                 'osId' => $evento['osId'],
-                // A reentrega do RabbitMQ cai aqui: o filtro nao casa, o
-                // updateOne nao altera nada, e o upsert tambem nao insere
-                // porque o documento existe. Zero efeito, sem leitura previa.
                 'messageIds' => ['$ne' => $evento['messageId']],
             ],
             [
                 '$set' => $set,
-                '$setOnInsert' => [
-                    'osId' => $evento['osId'],
-                    'sagaId' => $evento['sagaId'],
-                ],
                 '$push' => [
                     'historico' => $entrada,
                     'messageIds' => $evento['messageId'],
                 ],
             ],
-            ['upsert' => true],
         ));
+
+        if ($atualizado->getMatchedCount() > 0) {
+            return;
+        }
+
+        // Nao casou por um de dois motivos: o documento nao existe (primeira
+        // entrega desta OS) ou o messageId ja esta la (reentrega). O insert
+        // distingue os dois pelo indice unico, sem leitura previa.
+        try {
+            $documento = [
+                'osId' => $evento['osId'],
+                'sagaId' => $evento['sagaId'],
+                'messageIds' => [$evento['messageId']],
+                'historico' => [$entrada],
+                'atualizadoEm' => $set['atualizadoEm'],
+            ];
+
+            // Mesma regra do update: evento sem status nao cria o campo, para
+            // o documento nao nascer com um status que ninguem projetou.
+            if ($evento['status'] !== null) {
+                $documento['status'] = $evento['status'];
+            }
+
+            $this->raw(fn (Collection $colecao) => $colecao->insertOne($documento));
+        } catch (BulkWriteException $e) {
+            if (! $this->eChaveDuplicada($e)) {
+                throw $e;
+            }
+
+            // Duas entregas do mesmo evento ao mesmo tempo: as duas passaram
+            // pelo update (o documento ainda nao existia) e as duas tentaram
+            // inserir. A que perdeu tenta o update de novo — agora o
+            // documento existe e o messageId da vencedora esta la, entao o
+            // filtro nao casa e nada acontece. Zero efeito, como a reentrega
+            // deve ser.
+            $this->raw(fn (Collection $colecao) => $colecao->updateOne(
+                [
+                    'osId' => $evento['osId'],
+                    'messageIds' => ['$ne' => $evento['messageId']],
+                ],
+                [
+                    '$set' => $set,
+                    '$push' => [
+                        'historico' => $entrada,
+                        'messageIds' => $evento['messageId'],
+                    ],
+                ],
+            ));
+        }
+    }
+
+    /**
+     * O insert perdeu a corrida para o indice unico em osId. Qualquer outro
+     * erro de escrita nao e reentrega e tem que subir.
+     */
+    private function eChaveDuplicada(BulkWriteException $e): bool
+    {
+        foreach ($e->getWriteResult()->getWriteErrors() as $erro) {
+            if ((int) $erro->getCode() === 11000) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /**

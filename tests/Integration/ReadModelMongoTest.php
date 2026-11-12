@@ -80,8 +80,21 @@ final class ReadModelMongoTest extends TestCase
         );
     }
 
+    /**
+     * O indice unico em osId e o que garante um documento por OS, e e criado
+     * no arranque do worker. Sem ele aqui, a reentrega insere um SEGUNDO
+     * documento, `buscarPorOsId` devolve o primeiro e as assercoes abaixo
+     * passavam — verde com dois documentos no banco. Era esse o furo.
+     */
+    private function garantirIndices(): void
+    {
+        $this->repositorio->garantirIndices();
+    }
+
     public function testReentregaNaoDuplicaNoMongo(): void
     {
+        $this->garantirIndices();
+
         $env = $this->envelope('orcamento.gerado');
 
         $this->projetor->aplicar($env);
@@ -91,6 +104,45 @@ final class ReadModelMongoTest extends TestCase
 
         $this->assertCount(1, $doc['historico']);
         $this->assertCount(1, $doc['messageIds']);
+
+        // A assercao que faltava: um documento, e nao dois. E o que o indice
+        // unico cobra, e o que a reentrega com upsert violava.
+        $this->assertCount(1, $this->repositorio->listar(10));
+    }
+
+    /**
+     * A corrida que o indice unico resolve: duas entregas do mesmo evento
+     * chegam antes de o documento existir. A perdedora do insert tem que
+     * virar update sem efeito, e nao erro de escrita — erro de escrita nao e
+     * LostUpdateException nem PDOException, entao o consumidor mandaria para
+     * a DLQ um evento que ja estava aplicado.
+     */
+    public function testReentregaConcorrenteNaoEstoura(): void
+    {
+        $this->garantirIndices();
+
+        $env = $this->envelope('orcamento.gerado');
+
+        $this->projetor->aplicar($env);
+
+        // Simula a perdedora: documento ja existe e ja tem o messageId, e a
+        // escrita tenta inserir de novo. Sem o tratamento de 11000, isto
+        // sobe BulkWriteException.
+        $this->repositorio->registrarEvento([
+            'osId' => self::OS,
+            'sagaId' => self::SAGA,
+            'tipo' => 'orcamento.gerado',
+            'status' => 'AGUARDANDO_APROVACAO',
+            'ocorridoEm' => '2026-11-09T10:00:00Z',
+            'messageId' => $env->getMessageId(),
+            'dados' => [],
+        ]);
+
+        $doc = $this->repositorio->buscarPorOsId(self::OS);
+
+        $this->assertCount(1, $doc['historico']);
+        $this->assertCount(1, $doc['messageIds']);
+        $this->assertCount(1, $this->repositorio->listar(10));
     }
 
     public function testListarDevolveOsProjetados(): void
