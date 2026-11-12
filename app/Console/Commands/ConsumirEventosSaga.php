@@ -33,6 +33,13 @@ class ConsumirEventosSaga extends Command
      * O que não está aqui é descartado com log: evento novo no exchange não
      * pode derrubar o worker nem ir para a DLQ sem motivo.
      */
+    /**
+     * Routing keys com que os.saga.eventos esta ligada ao exchange no
+     * definitions.json do oficina-infra-fase4. Aqui elas sao so para log: o
+     * bind e do infra, nao deste processo.
+     */
+    private const ROUTING_KEYS = ['orcamento.*', 'pagamento.*', 'execucao.*', 'aprovacao.*'];
+
     private const ROTEAMENTO = [
         'orcamento.gerado' => 'onOrcamentoGerado',
         'orcamento.falhou' => 'onOrcamentoFalhou',
@@ -52,24 +59,33 @@ class ConsumirEventosSaga extends Command
 
         $this->info("saga: consumindo {$fila}");
 
-        $consumer->consume($fila, function (array $mensagem) use ($orchestrator) {
-            $envelope = Envelope::fromArray($mensagem);
-            $tipo = $envelope->getType();
+        // consumeEvents, nao consume: o consume() e privado, implementacao
+        // compartilhada entre consumeEvents e consumeCommands. E o handler
+        // recebe um Envelope ja montado — o MessageConsumer decodifica o JSON,
+        // confere o header.messageId e resolve o traceparent antes de chamar.
+        $consumer->consumeEvents(
+            queue: $fila,
+            routingKeys: self::ROUTING_KEYS,
+            handler: function (Envelope $envelope) use ($orchestrator): void {
+                $tipo = $envelope->getType();
 
-            $metodo = self::ROTEAMENTO[$tipo] ?? null;
+                $metodo = self::ROTEAMENTO[$tipo] ?? null;
 
-            if ($metodo === null) {
-                // Confirma a mensagem: um evento que este serviço não trata não
-                // é erro dele, e deixá-lo voltando para a fila trava o consumo.
-                Log::info('Saga: evento sem handler, confirmado sem efeito', [
-                    'type' => $tipo,
-                    'messageId' => $envelope->getMessageId(),
-                ]);
-                return;
-            }
+                if ($metodo === null) {
+                    // Confirma a mensagem: um evento que este servico nao trata
+                    // nao e erro dele, e deixa-lo voltando para a fila trava o
+                    // consumo.
+                    Log::info('Saga: evento sem handler, confirmado sem efeito', [
+                        'type' => $tipo,
+                        'messageId' => $envelope->getMessageId(),
+                    ]);
 
-            $orchestrator->{$metodo}($envelope);
-        });
+                    return;
+                }
+
+                $orchestrator->{$metodo}($envelope);
+            },
+        );
 
         return self::SUCCESS;
     }

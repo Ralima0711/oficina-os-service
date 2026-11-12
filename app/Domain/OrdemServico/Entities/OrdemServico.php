@@ -33,6 +33,31 @@ class OrdemServico implements \JsonSerializable
         private ?\DateTimeImmutable $concluidaEm = null,
     ) {}
 
+    /**
+     * Ja existe linha no banco para esta OS?
+     *
+     * NAO da para usar `getId() === null` para isso: criar() gera o UUID na
+     * hora, como manda a identidade em DDD, entao o id nunca e nulo e o
+     * repositorio mandava TODO save para o update com lock otimista — inclusive
+     * o primeiro. O insert() era codigo morto e nenhuma OS nova chegava a ser
+     * gravada: o UPDATE nao achava linha, affected era 0 e vinha
+     * LostUpdateException com "versao lida = 1".
+     *
+     * Quem hidrata do banco marca com marcarComoPersistida(); quem acabou de
+     * criar, nao.
+     */
+    private bool $persistida = false;
+
+    public function foiPersistida(): bool
+    {
+        return $this->persistida;
+    }
+
+    public function marcarComoPersistida(): void
+    {
+        $this->persistida = true;
+    }
+
     // ── Factory ────────────────────────────────────────────────────
 
     public static function criar(

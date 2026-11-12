@@ -99,6 +99,13 @@ return [
             'sslmode' => env('DB_SSLMODE', 'prefer'),
         ],
 
+        // Read model de status e histórico (CQRS, ADR-0009).
+        'mongodb' => [
+            'driver' => 'mongodb',
+            'dsn' => env('MONGO_DSN', 'mongodb://127.0.0.1:27017'),
+            'database' => env('MONGO_DATABASE', 'oficina_os'),
+        ],
+
         'sqlsrv' => [
             'driver' => 'sqlsrv',
             'url' => env('DB_URL'),

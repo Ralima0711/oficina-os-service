@@ -6,6 +6,7 @@ use App\Application\Messaging\Envelope;
 use App\Domain\OrdemServico\Entities\OrdemServico;
 use App\Domain\OrdemServico\Exceptions\LostUpdateException;
 use App\Domain\OrdemServico\Repositories\OrdemServicoRepositoryInterface;
+use App\Domain\Veiculo\Repositories\VeiculoRepositoryInterface;
 use App\Domain\OrdemServico\ValueObjects\StatusOrdem;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
@@ -47,9 +48,25 @@ class Orchestrator
     private const FILA_ENVIAR_EXECUCAO = 'execucao.enviar-para-execucao';
     private const FILA_CANCELAR_EXECUCAO = 'execucao.cancelar-execucao';
 
+    /**
+     * A sala de espera do ADR-0010. Nao tem consumidor, de proposito: a
+     * mensagem fica parada ate o x-message-ttl de 7 dias vencer, e o
+     * dead-letter a manda para o exchange oficina.espera com routing key
+     * aprovacao.expirada, de onde os.saga.eventos a recebe.
+     *
+     * Quem conta o tempo e o broker, nao a aplicacao. Nao ha job agendado.
+     */
+    private const FILA_AGUARDANDO_APROVACAO = 'billing.aguardando-aprovacao';
+
+    /** 7 dias, o mesmo x-message-ttl da fila no definitions.json. */
+    private const DIAS_PARA_APROVAR = 7;
+
     public function __construct(
         private OrdemServicoRepositoryInterface $osRepository,
         private Outbox $outbox,
+        // Veiculo vive neste mesmo servico (ADR-0007): resolver a placa aqui
+        // nao cruza fronteira nenhuma.
+        private VeiculoRepositoryInterface $veiculos,
     ) {}
 
     // ═══════════════════════════════════════════════════════════════
@@ -97,7 +114,7 @@ class Orchestrator
                 body: [
                     'osId' => $osId,
                     'clienteId' => $os->getClienteId(),
-                    'veiculo' => ['placa' => $os->getVeiculoId()],
+                    'veiculo' => ['placa' => $this->placaDo($os->getVeiculoId())],
                     'descricaoProblema' => $os->getDescricao(),
                     'itensDiagnosticados' => $itensDiagnosticados,
                 ],
@@ -112,16 +129,99 @@ class Orchestrator
         return $sagaId;
     }
 
+    /**
+     * Placa do veiculo da OS.
+     *
+     * O comando GerarOrcamento leva `veiculo.placa`, e ate 12/11 este metodo
+     * nao existia: o orquestrador mandava o PROPRIO veiculoId no lugar da
+     * placa. O Billing valida so que e string nao vazia, entao um uuid passava
+     * — o orcamento saia com um uuid no campo placa e ninguem via.
+     *
+     * Agora da para resolver de verdade: o ADR-0007 coloca Veiculo neste mesmo
+     * servico, entao nao ha fronteira a cruzar.
+     *
+     * Sem veiculo cadastrado, devolve o id e REGISTRA. OS criada antes das
+     * tabelas de cliente e veiculo existirem cai aqui; degradar em silencio
+     * seria repetir o erro que este arquivo inteiro passou o dia corrigindo.
+     */
+    private function placaDo(string $veiculoId): string
+    {
+        $veiculo = $this->veiculos->findById($veiculoId);
+
+        if ($veiculo !== null) {
+            return (string) $veiculo->getPlaca();
+        }
+
+        Log::warning('Saga: veiculo nao encontrado, placa nao resolvida', [
+            'veiculoId' => $veiculoId,
+        ]);
+
+        return $veiculoId;
+    }
+
     /** orcamento.gerado → AGUARDANDO_APROVACAO. Nada é publicado: espera humana. */
     public function onOrcamentoGerado(Envelope $env): void
     {
-        $this->processar($env, StatusOrdem::AGUARDANDO_ORCAMENTO, function (OrdemServico $os, array $body) {
+        $this->processar($env, StatusOrdem::AGUARDANDO_ORCAMENTO, function (OrdemServico $os, array $body) use ($env) {
             $os->registrarOrcamentoGerado(
                 $body['orcamentoId'],
                 (float) $body['valorTotal'],
             );                                                 // T3
             $this->avancarPasso($env->getSagaId(), 2);
+
+            $this->armarExpiracaoDaAprovacao($os, $env);
         });
+    }
+
+    /**
+     * Arma o prazo de aprovacao do ADR-0010.
+     *
+     * Ate 12/11 isto NAO EXISTIA e o timeout inteiro estava inerte: a fila
+     * billing.aguardando-aprovacao tinha o TTL de 7 dias e o dead-letter
+     * configurados no definitions.json, o orquestrador tinha
+     * onAprovacaoExpirada, o roteamento mapeava aprovacao.expirada e havia
+     * teste cobrindo — e NADA publicava na sala de espera. Nem binding, nem
+     * codigo, nos dois servicos. Tudo escrito, nada ligado.
+     *
+     * O que entra na sala de espera JA E o evento aprovacao.expirada, com o
+     * corpo que o orquestrador vai receber. Soa estranho publicar um evento
+     * que ainda nao aconteceu, mas e assim que mensagem atrasada por TTL
+     * funciona: quem decide QUANDO entregar e o broker. O
+     * ConsumirEventosSaga roteia pelo type do envelope, nao pela routing key,
+     * entao o type precisa ser o final desde a partida.
+     *
+     * Vai pelo outbox, como todo o resto: a intencao entra na MESMA transacao
+     * que mudou a OS para AGUARDANDO_APROVACAO. Prazo armado sem a mudanca de
+     * estado, ou o contrario, seria exatamente o que o outbox existe para
+     * impedir.
+     *
+     * Aprovacao antes do prazo nao desarma nada — a mensagem continua la e
+     * expira do mesmo jeito. O que protege e a guarda de onAprovacaoExpirada:
+     * ela so aceita a OS em AGUARDANDO_APROVACAO e so com o orcamentoId
+     * vigente. Expiracao de orcamento ja substituido, ou de OS que seguiu
+     * adiante, e descartada com log.
+     */
+    private function armarExpiracaoDaAprovacao(OrdemServico $os, Envelope $env): void
+    {
+        $expiraEm = (new \DateTimeImmutable('now', new \DateTimeZone('UTC')))
+            ->modify('+' . self::DIAS_PARA_APROVAR . ' days')
+            ->format('Y-m-d\TH:i:s\Z');
+
+        $this->outbox->comando(
+            self::FILA_AGUARDANDO_APROVACAO,
+            Envelope::create(
+                type: 'aprovacao.expirada',
+                body: [
+                    'osId' => $os->getId(),
+                    'orcamentoId' => $os->getOrcamentoId(),
+                    'expirouEm' => $expiraEm,
+                ],
+                sagaId: $env->getSagaId(),
+                causationId: $env->getMessageId(),
+                traceparent: $env->getTraceparent(),
+            ),
+            $os->getId(),
+        );
     }
 
     /** orcamento.falhou → CANCELADA. Nada a compensar: nenhum orçamento existe. */

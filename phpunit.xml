@@ -11,6 +11,9 @@
         <testsuite name="Feature">
             <directory>tests/Feature</directory>
         </testsuite>
+        <testsuite name="Integration">
+            <directory>tests/Integration</directory>
+        </testsuite>
     </testsuites>
     <source>
         <include>
@@ -23,6 +26,14 @@
         <env name="BCRYPT_ROUNDS" value="4"/>
         <env name="BROADCAST_CONNECTION" value="null"/>
         <env name="CACHE_STORE" value="array"/>
+        <!--
+            SQLite e o PADRAO, nao uma imposicao: sem force, quem exportar
+            DB_CONNECTION roda a suite contra aquele banco — que e o que o
+            SagaOutboxTest precisa, porque ele testa transacao e tipo de
+            coluna, e no SQLite `uuid()` e so texto. Ele proprio pula com
+            aviso quando cai no SQLite, em vez de passar sem ter validado
+            nada.
+        -->
         <env name="DB_CONNECTION" value="sqlite"/>
         <env name="DB_DATABASE" value=":memory:"/>
         <env name="DB_URL" value=""/>

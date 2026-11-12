@@ -98,9 +98,7 @@ class MessageConsumer
     {
         $channel = $this->channel();
 
-        if (!$this->confereFila($channel, $queue)) {
-            return;
-        }
+        $this->exigirFila($channel, $queue);
 
         $this->escutarParada($channel);
         $channel->basic_qos(0, 1, false);
@@ -116,7 +114,13 @@ class MessageConsumer
         );
 
         try {
-            while ($channel->is_consuming() && !$this->encerrar) {
+            // count($channel->callbacks), nao $channel->is_consuming():
+            // is_consuming() so existe no php-amqplib 3.x e este servico esta
+            // no ^2.8 (o billing e a execucao estao no ^3.7 — divergencia real,
+            // anotada para alinhar na proxima fase). callbacks e publico nas
+            // duas versoes e fica vazio quando o broker cancela o consumo,
+            // entao esta condicao vale nos dois majors.
+            while (count($channel->callbacks) > 0 && !$this->encerrar) {
                 $channel->wait();
             }
         } catch (Throwable $e) {
@@ -135,24 +139,58 @@ class MessageConsumer
      * seguir usando a mesma conexão depois — por isso o retorno booleano em vez
      * de uma exceção tratada no laço.
      */
-    private function confereFila(AMQPChannel $channel, string $queue): bool
+    /**
+     * Declare passivo: confere que a fila existe sem criar nada.
+     *
+     * ESTOURA em vez de devolver false. Devolver false fazia o consume()
+     * retornar, o handle() do comando chegar ao `return Command::SUCCESS` e o
+     * processo sair com codigo 0 — um worker que nao consumiu nada reportando
+     * sucesso. Em Deployment isso vira reinicio em laco com saida zero, que e
+     * a combinacao mais dificil de perceber que existe.
+     *
+     * O MessagePublisher ja fazia assim, com a mesma excecao.
+     */
+    private function exigirFila(AMQPChannel $channel, string $queue): void
     {
         try {
             $channel->queue_declare($queue, true);
-            return true;
         } catch (AMQPProtocolChannelException $e) {
             Log::error(
                 "Fila {$queue} não existe neste broker. A topologia vem do "
                 . 'rabbitmq/definitions.json no oficina-infra-fase4.',
                 ['erro' => $e->getMessage()]
             );
-            return false;
+
+            throw new TopologiaAusente(
+                "Fila {$queue} nao existe neste broker. A topologia vem do "
+                . 'rabbitmq/definitions.json no oficina-infra-fase4.',
+                previous: $e,
+            );
         }
+    }
+
+    /**
+     * Delivery tag da mensagem.
+     *
+     * NAO use $msg->getDeliveryTag(): esse metodo so existe no php-amqplib 3.x
+     * e este servico esta no ^2.8. No 2.x o canal preenche delivery_info na
+     * entrega, e delivery_info e propriedade DECLARADA em GenericContent, a
+     * classe pai — nao e propriedade dinamica, entao nao ha deprecation no PHP
+     * 8.4.
+     *
+     * Terceira vez que a divergencia de versao morde: antes foram
+     * is_consuming() e este. O billing e a execucao estao no ^3.7. Alinhar os
+     * tres numa proxima fase resolve a classe inteira de uma vez; ate la, este
+     * ponto unico evita espalhar a diferenca pelo arquivo.
+     */
+    private function tagDe(AMQPMessage $msg): int
+    {
+        return (int) $msg->delivery_info['delivery_tag'];
     }
 
     private function tratar(AMQPMessage $msg, Closure $handler, AMQPChannel $channel): void
     {
-        $tag = $msg->getDeliveryTag();
+        $tag = $this->tagDe($msg);
         $messageId = null;
 
         try {
@@ -216,7 +254,7 @@ class MessageConsumer
                 'tentativas' => $feitas,
                 'erro' => $e->getMessage(),
             ]);
-            $channel->basic_nack($msg->getDeliveryTag(), false, false);
+            $channel->basic_nack($this->tagDe($msg), false, false);
             return;
         }
 
@@ -228,7 +266,7 @@ class MessageConsumer
         ]);
 
         sleep(self::ESPERA_SEGUNDOS);
-        $channel->basic_nack($msg->getDeliveryTag(), false, true);
+        $channel->basic_nack($this->tagDe($msg), false, true);
     }
 
     /** Colisão de version é transitória: outro consumidor venceu, vale tentar de novo. */
