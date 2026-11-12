@@ -35,15 +35,31 @@ Suíte local: 315 testes, 611 asserções, 43 pulados, OK.
 - [x] CI — `.github/workflows/ci.yml`
 - [x] Configuração do Sonar — `sonar-project.properties`
 - [x] Dockerfile — `Dockerfile` (imagem `os-service:test` com ext-mongodb construída)
-- [x] Read model Mongo (CQRS) — commits 56b59cc e 2b15e33, PR #12 aberto, integração 4/4 no container
+- [x] Read model Mongo (CQRS) — commits 56b59cc e 2b15e33, **PR #12 mergeado na main** (1d0b56b), junto com o #13 (3528800). Integração 4/4 no container.
 
 ## 3. De todos — o que ainda não fecha
+
+- [ ] **Idempotência do read model no Mongo (apontada pelo Gustavo em 12/11)**
+  `MongoRepositorioDeLeitura::registrarEvento` usa `updateOne` com `upsert: true` e filtro
+  `{osId, messageIds: {$ne: messageId}}`. Na reentrega o filtro não casa e o upsert **insere** —
+  o upsert não olha se o documento existe. Com o índice único em `osId` (criado no arranque do worker)
+  isso vira erro 11000, que não é `LostUpdateException` nem `PDOException`, então o `MessageConsumer`
+  manda para a DLQ em vez de tratar como já aplicada. Provado no Mongo real: 11000 na reentrega.
+  Correção: `updateOne` sem upsert quando o documento existe; `insert` só quando não existe;
+  `DuplicateKey` na corrida vira segunda tentativa do update.
+  **O teste `testReentregaNaoDuplicaNoMongo` NÃO pega isso**: ele não chama `garantirIndices()`,
+  então sem índice único a reentrega insere um segundo documento e a asserção olha só o primeiro.
+  Verificado: o teste passa e deixa 2 documentos com o mesmo `osId` na coleção.
+
+- [ ] **Bindings do read model no manifesto do cluster**
+  `k8s/base/11-rabbitmq-definitions.yaml` liga `os.readmodel.eventos` só em `os.*`. Os bindings de
+  `orcamento.*`, `pagamento.*`, `execucao.*` e `aprovacao.expirada` estão no `definitions.json` do
+  compose, não no manifesto — no EKS o worker não vê o meio da saga. Correção no `oficina-infra-fase4`.
 
 - [ ] **PDF da entrega** — nenhum `.pdf` no repo.
 - [ ] **Vídeo** — adiado pela Roberta.
 - [ ] **Análise no SonarQube** — a configuração existe, mas o resultado no servidor não dá para confirmar daqui.
-- [ ] **Merge da pilha para a main** — depende da Roberta (main → feat/dockerfile → fix/caminho-de-escrita → feat/api-ordens-servico → feat/cliente-e-veiculo → fix/prazo-de-aprovacao → feat/read-model).
-- [ ] **`definitions.json` com `os.readmodel-eventos`** — depende de Roberta/infra.
+- [ ] **Merge da pilha para a main** — #12 e #13 já entraram (main = 1d0b56b); o que resta é o PR desta branch.
 
 ## 4. Ordem sugerida
 
