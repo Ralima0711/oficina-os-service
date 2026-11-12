@@ -49,5 +49,12 @@ class SagaServiceProvider extends ServiceProvider
         });
 
         $this->app->singleton(Orchestrator::class);
+
+        $this->app->bind(
+            \App\Application\ReadModel\RepositorioDeLeituraInterface::class,
+            \App\Infrastructure\ReadModel\MongoRepositorioDeLeitura::class,
+        );
+
+        $this->app->singleton(\App\Application\ReadModel\ProjetorDeOrdens::class);
     }
 }

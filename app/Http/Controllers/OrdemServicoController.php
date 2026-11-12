@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers;
 
+use App\Application\ReadModel\RepositorioDeLeituraInterface;
 use App\Application\Saga\Orchestrator;
 use App\Domain\OrdemServico\Entities\OrdemServico;
 use App\Domain\OrdemServico\Repositories\OrdemServicoRepositoryInterface;
@@ -106,6 +107,31 @@ class OrdemServicoController extends Controller
         }
 
         return response()->json($this->representar($os));
+    }
+
+    /**
+     * Lado de leitura do CQRS (ADR-0009): status e histórico vêm do MongoDB.
+     *
+     * É eventualmente consistente. O campo `commandId` devolve o último
+     * messageId projetado, para o cliente comparar com o id que recebeu no
+     * comando e saber se está lendo dado atrasado — como o ADR-0009 pede.
+     */
+    public function historico(string $id, RepositorioDeLeituraInterface $leitura): JsonResponse
+    {
+        $doc = $leitura->buscarPorOsId($id);
+
+        if ($doc === null) {
+            return response()->json([
+                'erro' => 'Historico ainda nao projetado para esta ordem de servico.',
+            ], 404);
+        }
+
+        return response()->json([
+            'osId' => $doc['osId'],
+            'status' => $doc['status'],
+            'commandId' => end($doc['messageIds']) ?: null,
+            'historico' => $doc['historico'],
+        ]);
     }
 
     /** @return array<string, mixed> */

@@ -36,6 +36,9 @@ Route::post('ordens-servico/{id}/diagnostico', [OrdemServicoController::class, '
 Route::get('ordens-servico/{id}', [OrdemServicoController::class, 'show'])
     ->name('ordens-servico.show');
 
+Route::get('ordens-servico/{id}/historico', [OrdemServicoController::class, 'historico'])
+    ->name('ordens-servico.historico');
+
 // ----------------------------------------------------------------- Cliente
 Route::get('clientes', [ClienteController::class, 'index'])->name('clientes.index');
 Route::post('clientes', [ClienteController::class, 'store'])->name('clientes.store');
