@@ -92,7 +92,7 @@ Cassandra e Neo4j ficam de fora. É escolha consciente: a disciplina de grafos n
 - (+) Cobre relacional, documento e chave-valor — as aulas 1, 2, 3 e 7 de Data Engineering mais a aula de CQRS.
 - (+) Cada forma de dado no banco que a serve: fila é chave-valor, timeline é documento, dinheiro é relacional.
 - (−) Cinco instâncias de banco no ambiente local; o `docker-compose` fica pesado.
-- (−) O read model é eventualmente consistente. A Aula 5 ensina devolver o ID do command e compará-lo na query para o cliente saber que lê dado atrasado; adotamos isso.
+- (−) O read model é eventualmente consistente. A Aula 5 ensina devolver o ID do command e compará-lo na query para o cliente saber que lê dado atrasado. **Adotamos a ideia, não a forma:** o `POST /diagnostico` devolve `sagaId`, não um `messageId`, então é o `sagaId` que o cliente tem em mãos e pode conferir na consulta. O `GET /historico` devolve `sagaId`, `ultimoEventoId` e `atualizadoEm` — os dois últimos dizem até onde a projeção chegou. Um campo chamado `commandId` chegou a existir e devolvia o messageId do último evento projetado: prometia uma comparação que o cliente não tinha como fazer.
 - (−) A disciplina de grafos não é exercitada no projeto.
 
 ---

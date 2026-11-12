@@ -110,11 +110,17 @@ class OrdemServicoController extends Controller
     }
 
     /**
-     * Lado de leitura do CQRS (ADR-0009): status e histórico vêm do MongoDB.
+     * Lado de leitura do CQRS (ADR-0009): status e historico vem do MongoDB.
      *
-     * É eventualmente consistente. O campo `commandId` devolve o último
-     * messageId projetado, para o cliente comparar com o id que recebeu no
-     * comando e saber se está lendo dado atrasado — como o ADR-0009 pede.
+     * E eventualmente consistente, e a resposta diz com o que o cliente pode
+     * se orientar.
+     *
+     * O campo chamava-se `commandId` e devolvia o messageId do ultimo evento
+     * projetado. O nome prometia uma comparacao que nao existe: o cliente
+     * recebe `sagaId` no 202 do POST /diagnostico, nunca um messageId, entao
+     * nao havia com o que comparar. Agora sao dois campos com nome honesto:
+     * `sagaId`, que o cliente TEM e pode conferir, e `ultimoEventoId` com
+     * `atualizadoEm`, que dizem ate onde a projecao chegou.
      */
     public function historico(string $id, RepositorioDeLeituraInterface $leitura): JsonResponse
     {
@@ -126,11 +132,17 @@ class OrdemServicoController extends Controller
             ], 404);
         }
 
+        $messageIds = $doc['messageIds'] ?? [];
+
         return response()->json([
             'osId' => $doc['osId'],
-            'status' => $doc['status'],
-            'commandId' => end($doc['messageIds']) ?: null,
-            'historico' => $doc['historico'],
+            // O documento pode nao ter status: o primeiro evento de uma OS
+            // pode ser um que so entra no historico e nao projeta estado.
+            'status' => $doc['status'] ?? null,
+            'sagaId' => $doc['sagaId'] ?? null,
+            'ultimoEventoId' => $messageIds === [] ? null : end($messageIds),
+            'atualizadoEm' => $doc['atualizadoEm'] ?? null,
+            'historico' => $doc['historico'] ?? [],
         ]);
     }
 
