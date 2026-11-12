@@ -68,7 +68,8 @@ Suíte local: 319 testes, 627 asserções, 43 pulados, OK. Com o fix do #15 no c
   `fix/prazo-de-aprovacao`, `feat/read-model` e `fix/read-model-ligado`. Restam só os PRs #14 e #15.
 - [x] **Sonar no CI** — `sonar-project-key` estava vazio no `ci.yml` e o job era pulado inteiro.
   Preenchido com `Ralima0711_oficina-os-service`, a mesma chave de `sonar-project.properties`.
-  Falta só o `SONAR_TOKEN` nos secrets para o scanner autenticar.
+  O job agora roda e falha no step "Analisar": falta o `SONAR_TOKEN`. Criar o projeto no SonarCloud,
+  cadastrar o token e a organização é a tarefa 66 do board, **da Roberta** — não minha.
 
 ## 4. Ordem sugerida
 
@@ -92,3 +93,36 @@ Suíte local: 319 testes, 627 asserções, 43 pulados, OK. Com o fix do #15 no c
   ```
 
   Sem Postgres: `vendor/bin/behat --tags='~@saga'` (só o CRUD de clientes e veículos).
+
+## 6. Board do Notion — o que é meu (export de 12/11)
+
+Dez tarefas com meu nome. Cinco concluídas, cinco em aberto:
+
+| # | Tarefa | Board | Realidade |
+|---|---|---|---|
+| 6 | OS Service — Postgres, abertura, máquina de estado, REST + Swagger | A fazer | ✅ PR #14 |
+| 34 | Compensações — cancelar OS, anular orçamento | A fazer | ✅ código e testes (`Orchestrator.php:382-388`) |
+| 43 | BDD do fluxo completo verde | A fazer | ✅ PR #14, 16 cenários |
+| 44 | Gravar — fluxo completo da OS + saga e tratamento de falhas | A fazer | ⏳ adiado pela Roberta |
+| 58 | Consulta agregada da OS via API Composition no Kong | A fazer | ⏳ depende da Roberta |
+| 13, 26, 36, 45, 64, 67 | Orquestrador, máquina de estados, Reread Value, read model, Aggregate, testes de transição | Concluído | ✅ |
+
+O board já diz, na tarefa 58, que "a aula prefere isso a mais uma projeção" — ou seja, a
+direção é API Composition no Kong, não uma segunda projeção. O que falta decidir é quem
+escreve o bloco no `20-kong.yaml`.
+
+### Não é meu, mas trava a entrega
+
+- **66** — criar os projetos no Sonar, cadastrar `SONAR_TOKEN` e `SONAR_ORGANIZATION` nos 4 repos: **Roberta**.
+  É a causa da falha do job `sonar` no PR #14.
+- **46** — PDF da entrega: **Roberta**.
+- **76** — RMs dos quatro integrantes, **BLOQUEANTE para o PDF**: **Todos**. O meu RM ainda não foi enviado.
+- **47** — Swagger/collection Postman nos 3 repositórios: **Todos**. O os-service está feito (PR #14);
+  billing (Gustavo) e execução (David) seguem pendentes.
+- **50** — setup do BDD nos 3 repositórios: **David**, em revisão.
+
+### Inconsistência no board
+
+A tarefa 29 ("DECIDIR ferramenta de BDD — assistir Aulas 3 e 4") está como *A fazer*, e a 63
+("BDD DECIDIDO: cenários em Gherkin, executados com Behat") está como *Concluído*. A 29 deveria
+estar concluída também — a decisão já foi tomada e o Behat já roda no os-service.
