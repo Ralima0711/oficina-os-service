@@ -170,8 +170,10 @@ paths:
         Lado de leitura do CQRS (ADR-0009): status e histórico vêm do MongoDB,
         projeto do tópico de eventos. É **eventualmente consistente**.
 
-        `commandId` devolve o último `messageId` projetado: o cliente compara
-        com o id que recebeu no comando e sabe se está lendo dado atrasado.
+        `sagaId` é o mesmo que o `202` do diagnóstico devolveu — é o que o
+        cliente TEM para conferir. `ultimoEventoId` e `atualizadoEm` dizem até
+        onde a projeção chegou. (O campo já se chamou `commandId`, prometendo
+        uma comparação com um messageId que o cliente nunca recebe.)
       operationId: consultarHistorico
       parameters:
         - $ref: '#/components/parameters/OsId'
@@ -643,11 +645,24 @@ components:
           format: uuid
         status:
           type: string
-          description: Último status projetado.
-        commandId:
+          nullable: true
+          description: |
+            Último status projetado. Pode ser nulo: o primeiro evento de uma OS
+            pode ser um que só entra no histórico e não projeta estado.
+        sagaId:
+          type: string
+          format: uuid
+          nullable: true
+          description: O mesmo sagaId que o 202 do diagnóstico devolveu.
+        ultimoEventoId:
           type: string
           nullable: true
-          description: Último messageId projetado — para o cliente saber se está lendo dado atrasado.
+          description: messageId do último evento projetado — até onde a projeção chegou.
+        atualizadoEm:
+          type: string
+          format: date-time
+          nullable: true
+          description: Quando a projeção foi escrita pela última vez.
         historico:
           type: array
           items:
