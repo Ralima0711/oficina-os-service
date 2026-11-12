@@ -169,6 +169,102 @@ class SagaOutboxTest extends TestCase
         }
     }
 
+    // ── Prazo de aprovação (ADR-0010) ──────────────────────────────
+
+    /**
+     * Ate 12/11 o timeout de 7 dias estava INERTE de ponta a ponta: a fila
+     * billing.aguardando-aprovacao tinha TTL e dead-letter no
+     * definitions.json, o orquestrador tinha onAprovacaoExpirada, o
+     * roteamento mapeava aprovacao.expirada, e havia teste — e NADA publicava
+     * na sala de espera. Tudo escrito, nada ligado.
+     */
+    public function test_orcamento_gerado_arma_o_prazo_de_aprovacao(): void
+    {
+        [$osId, $sagaId] = $this->osAguardandoOrcamento();
+
+        $this->saga->onOrcamentoGerado($this->evento('orcamento.gerado', $sagaId, [
+            'osId' => $osId,
+            'orcamentoId' => $this->id('o-1'),
+            'valorTotal' => 241.80,
+        ]));
+
+        // Direto na tabela: o outboxDe() projeta so tipo, destino e canal,
+        // porque os testes de ordem comparam a lista inteira. Aqui o que
+        // importa e o payload.
+        $espera = DB::table('saga_outbox')
+            ->where('os_id', $osId)
+            ->where('destino', 'billing.aguardando-aprovacao')
+            ->first();
+
+        $this->assertNotNull($espera, 'nada foi colocado na sala de espera do ADR-0010');
+
+        $corpo = json_decode($espera->payload, true);
+
+        // O type ja e o final: quem decide QUANDO entregar e o broker, e o
+        // ConsumirEventosSaga roteia pelo type do envelope.
+        $this->assertSame('aprovacao.expirada', $corpo['header']['type']);
+        $this->assertSame($osId, $corpo['body']['osId']);
+        $this->assertSame($this->id('o-1'), $corpo['body']['orcamentoId']);
+    }
+
+    /** A intencao entra na MESMA transacao que mudou a OS. */
+    public function test_o_prazo_entra_junto_com_a_mudanca_de_estado(): void
+    {
+        [$osId, $sagaId] = $this->osAguardandoOrcamento();
+
+        $this->saga->onOrcamentoGerado($this->evento('orcamento.gerado', $sagaId, [
+            'osId' => $osId,
+            'orcamentoId' => $this->id('o-1'),
+            'valorTotal' => 241.80,
+        ]));
+
+        $this->assertSame(
+            StatusOrdem::AGUARDANDO_APROVACAO,
+            $this->repo->findById($osId)->getStatus()->value()
+        );
+
+        $this->assertNotNull(
+            collect($this->outboxDe($osId))->firstWhere('destino', 'billing.aguardando-aprovacao')
+        );
+    }
+
+    /**
+     * Aprovar antes do prazo nao desarma a mensagem: ela continua na sala de
+     * espera e expira do mesmo jeito, 7 dias depois. Quem protege e a guarda
+     * de onAprovacaoExpirada, nao o desarme.
+     */
+    public function test_expiracao_nao_cancela_os_que_ja_avancou(): void
+    {
+        [$osId, $sagaId] = $this->osAguardandoOrcamento();
+
+        $this->saga->onOrcamentoGerado($this->evento('orcamento.gerado', $sagaId, [
+            'osId' => $osId,
+            'orcamentoId' => $this->id('o-1'),
+            'valorTotal' => 241.80,
+        ]));
+
+        $this->saga->onOrcamentoAprovado($this->evento('orcamento.aprovado', $sagaId, [
+            'osId' => $osId,
+            'orcamentoId' => $this->id('o-1'),
+            'decidioEm' => '2026-11-09T10:00:00Z',
+        ]));
+
+        $antes = $this->repo->findById($osId)->getStatus()->value();
+
+        // a mensagem da sala de espera chegando depois
+        $this->saga->onAprovacaoExpirada($this->evento('aprovacao.expirada', $sagaId, [
+            'osId' => $osId,
+            'orcamentoId' => $this->id('o-1'),
+            'expirouEm' => '2026-11-20T00:00:00Z',
+        ]));
+
+        $this->assertSame(
+            $antes,
+            $this->repo->findById($osId)->getStatus()->value(),
+            'expiracao nao pode cancelar OS que ja passou da aprovacao'
+        );
+    }
+
     // ── Idempotência ───────────────────────────────────────────────
 
     public function test_evento_repetido_nao_gera_efeito_nem_segunda_mensagem(): void
@@ -189,7 +285,11 @@ class SagaOutboxTest extends TestCase
             $this->repo->findById($osId)->getStatus()->value()
         );
         $this->assertDatabaseCount('mensagens_processadas', 1);
-        $this->assertCount(1, $this->outboxDe($osId)); // só o GerarOrcamento inicial
+        // 2 e nao 1: o GerarOrcamento da abertura MAIS o prazo de aprovacao
+        // que o onOrcamentoGerado passou a armar na sala de espera (ADR-0010).
+        // O que este teste prova continua sendo o mesmo — repetir o evento nao
+        // acrescenta NENHUMA linha nova.
+        $this->assertCount(2, $this->outboxDe($osId));
     }
 
     // ── Guardas de ordem ───────────────────────────────────────────
@@ -277,6 +377,9 @@ class SagaOutboxTest extends TestCase
         $this->assertSame(
             [
                 ['tipo' => 'GerarOrcamento', 'destino' => 'billing.gerar-orcamento', 'canal' => 'comando'],
+                // Armado junto com a mudanca para AGUARDANDO_APROVACAO: o
+                // broker entrega 7 dias depois, se ninguem aprovar (ADR-0010).
+                ['tipo' => 'aprovacao.expirada', 'destino' => 'billing.aguardando-aprovacao', 'canal' => 'comando'],
                 ['tipo' => 'CobrarPagamento', 'destino' => 'billing.cobrar-pagamento', 'canal' => 'comando'],
                 ['tipo' => 'EnviarParaExecucao', 'destino' => 'execucao.enviar-para-execucao', 'canal' => 'comando'],
                 ['tipo' => 'os.finalizada', 'destino' => 'os.finalizada', 'canal' => 'evento'],
@@ -310,7 +413,10 @@ class SagaOutboxTest extends TestCase
             $this->repo->findById($osId)->getStatus()->value()
         );
 
-        $compensacoes = array_slice(array_column($this->outboxDe($osId), 'tipo'), 3);
+        // 4 e nao 3: a ida agora tem GerarOrcamento, o prazo de aprovacao,
+        // CobrarPagamento e EnviarParaExecucao. O que vem depois disso e
+        // compensacao.
+        $compensacoes = array_slice(array_column($this->outboxDe($osId), 'tipo'), 4);
 
         $this->assertSame(
             ['CancelarExecucao', 'EstornarPagamento', 'AnularOrcamento', 'os.cancelada'],
