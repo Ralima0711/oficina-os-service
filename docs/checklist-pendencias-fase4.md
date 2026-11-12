@@ -116,7 +116,8 @@ escreve o bloco no `20-kong.yaml`.
 - **66** — criar os projetos no Sonar, cadastrar `SONAR_TOKEN` e `SONAR_ORGANIZATION` nos 4 repos: **Roberta**.
   É a causa da falha do job `sonar` no PR #14.
 - **46** — PDF da entrega: **Roberta**.
-- **76** — RMs dos quatro integrantes, **BLOQUEANTE para o PDF**: **Todos**. O meu RM ainda não foi enviado.
+- **76** — RMs dos quatro integrantes, **BLOQUEANTE para o PDF**: **Todos**. O meu RM **já foi enviado**
+  (12/11); o board ainda mostra a tarefa em aberto, então falta atualizar o card, não enviar o dado.
 - **47** — Swagger/collection Postman nos 3 repositórios: **Todos**. O os-service está feito (PR #14);
   billing (Gustavo) e execução (David) seguem pendentes.
 - **50** — setup do BDD nos 3 repositórios: **David**, em revisão.
