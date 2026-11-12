@@ -6,6 +6,7 @@ use App\Application\Messaging\Envelope;
 use App\Domain\OrdemServico\Entities\OrdemServico;
 use App\Domain\OrdemServico\Exceptions\LostUpdateException;
 use App\Domain\OrdemServico\Repositories\OrdemServicoRepositoryInterface;
+use App\Domain\Veiculo\Repositories\VeiculoRepositoryInterface;
 use App\Domain\OrdemServico\ValueObjects\StatusOrdem;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
@@ -50,6 +51,9 @@ class Orchestrator
     public function __construct(
         private OrdemServicoRepositoryInterface $osRepository,
         private Outbox $outbox,
+        // Veiculo vive neste mesmo servico (ADR-0007): resolver a placa aqui
+        // nao cruza fronteira nenhuma.
+        private VeiculoRepositoryInterface $veiculos,
     ) {}
 
     // ═══════════════════════════════════════════════════════════════
@@ -97,7 +101,7 @@ class Orchestrator
                 body: [
                     'osId' => $osId,
                     'clienteId' => $os->getClienteId(),
-                    'veiculo' => ['placa' => $os->getVeiculoId()],
+                    'veiculo' => ['placa' => $this->placaDo($os->getVeiculoId())],
                     'descricaoProblema' => $os->getDescricao(),
                     'itensDiagnosticados' => $itensDiagnosticados,
                 ],
@@ -110,6 +114,36 @@ class Orchestrator
         Log::info('Saga: iniciada', ['osId' => $osId, 'sagaId' => $sagaId]);
 
         return $sagaId;
+    }
+
+    /**
+     * Placa do veiculo da OS.
+     *
+     * O comando GerarOrcamento leva `veiculo.placa`, e ate 12/11 este metodo
+     * nao existia: o orquestrador mandava o PROPRIO veiculoId no lugar da
+     * placa. O Billing valida so que e string nao vazia, entao um uuid passava
+     * — o orcamento saia com um uuid no campo placa e ninguem via.
+     *
+     * Agora da para resolver de verdade: o ADR-0007 coloca Veiculo neste mesmo
+     * servico, entao nao ha fronteira a cruzar.
+     *
+     * Sem veiculo cadastrado, devolve o id e REGISTRA. OS criada antes das
+     * tabelas de cliente e veiculo existirem cai aqui; degradar em silencio
+     * seria repetir o erro que este arquivo inteiro passou o dia corrigindo.
+     */
+    private function placaDo(string $veiculoId): string
+    {
+        $veiculo = $this->veiculos->findById($veiculoId);
+
+        if ($veiculo !== null) {
+            return (string) $veiculo->getPlaca();
+        }
+
+        Log::warning('Saga: veiculo nao encontrado, placa nao resolvida', [
+            'veiculoId' => $veiculoId,
+        ]);
+
+        return $veiculoId;
     }
 
     /** orcamento.gerado → AGUARDANDO_APROVACAO. Nada é publicado: espera humana. */

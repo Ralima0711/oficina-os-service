@@ -3,12 +3,22 @@
 namespace App\Domain\Veiculo\Entities;
 
 use App\Domain\Veiculo\ValueObjects\Placa;
+use Ramsey\Uuid\Uuid;
 
+/**
+ * CAMADA DE DOMINIO — Entidade Veiculo
+ *
+ * Mesma historia do Cliente: o ADR-0007 coloca veiculo no OS Service e o
+ * recorte parou no scaffolding. Identidade em uuid pelo mesmo motivo —
+ * ordens_servico.veiculo_id e coluna `uuid`.
+ */
 class Veiculo implements \JsonSerializable
 {
+    private bool $persistido = false;
+
     public function __construct(
-        private ?int $id,
-        private int $clienteId,
+        private ?string $id,
+        private string $clienteId,
         private Placa $placa,
         private string $marca,
         private string $modelo,
@@ -17,8 +27,34 @@ class Veiculo implements \JsonSerializable
         private \DateTimeImmutable $criadoEm,
     ) {}
 
-    public function atualizar(int $clienteId, Placa $placa, string $marca, string $modelo, int $ano, ?string $cor): void
-    {
+    public static function criar(
+        string $clienteId,
+        Placa $placa,
+        string $marca,
+        string $modelo,
+        int $ano,
+        ?string $cor = null,
+    ): self {
+        return new self(
+            id: Uuid::uuid4()->toString(),
+            clienteId: $clienteId,
+            placa: $placa,
+            marca: $marca,
+            modelo: $modelo,
+            ano: $ano,
+            cor: $cor,
+            criadoEm: new \DateTimeImmutable(),
+        );
+    }
+
+    public function atualizar(
+        string $clienteId,
+        Placa $placa,
+        string $marca,
+        string $modelo,
+        int $ano,
+        ?string $cor,
+    ): void {
         $this->clienteId = $clienteId;
         $this->placa = $placa;
         $this->marca = $marca;
@@ -27,57 +63,36 @@ class Veiculo implements \JsonSerializable
         $this->cor = $cor;
     }
 
-    public function getId(): ?int
+    public function foiPersistido(): bool
     {
-        return $this->id;
+        return $this->persistido;
     }
 
-    public function getClienteId(): int
+    public function marcarComoPersistido(): void
     {
-        return $this->clienteId;
+        $this->persistido = true;
     }
 
-    public function getPlaca(): Placa
-    {
-        return $this->placa;
-    }
-
-    public function getMarca(): string
-    {
-        return $this->marca;
-    }
-
-    public function getModelo(): string
-    {
-        return $this->modelo;
-    }
-
-    public function getAno(): int
-    {
-        return $this->ano;
-    }
-
-    public function getCor(): ?string
-    {
-        return $this->cor;
-    }
-
-    public function getCriadoEm(): \DateTimeImmutable
-    {
-        return $this->criadoEm;
-    }
+    public function getId(): ?string        { return $this->id; }
+    public function getClienteId(): string  { return $this->clienteId; }
+    public function getPlaca(): Placa       { return $this->placa; }
+    public function getMarca(): string      { return $this->marca; }
+    public function getModelo(): string     { return $this->modelo; }
+    public function getAno(): int           { return $this->ano; }
+    public function getCor(): ?string       { return $this->cor; }
+    public function getCriadoEm(): \DateTimeImmutable { return $this->criadoEm; }
 
     public function jsonSerialize(): array
     {
         return [
             'id' => $this->id,
-            'cliente_id' => $this->clienteId,
+            'clienteId' => $this->clienteId,
             'placa' => (string) $this->placa,
             'marca' => $this->marca,
             'modelo' => $this->modelo,
             'ano' => $this->ano,
             'cor' => $this->cor,
-            'criado_em' => $this->criadoEm->format('Y-m-d H:i:s'),
+            'criadoEm' => $this->criadoEm->format('Y-m-d H:i:s'),
         ];
     }
 }
