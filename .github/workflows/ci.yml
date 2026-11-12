@@ -73,3 +73,42 @@ jobs:
       AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
       AWS_SESSION_TOKEN: ${{ secrets.AWS_SESSION_TOKEN }}
       KUBECONFIG: ${{ secrets.KUBECONFIG }}
+
+  # O BDD do fluxo completo (features/*.feature) roda com o Behat, e os
+  # cenarios @saga exigem Postgres de verdade — a mesma razao do
+  # ExigeBancoDeTeste: as colunas sao uuid e no SQLite `uuid()` e texto
+  # solto. O servico sobe um banco dedicado, oficina_os_test, e o
+  # FeatureContext recusa qualquer coisa que nao termine em _test.
+  bdd:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: oficina_os_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: "8.4"
+          extensions: mbstring, pdo_pgsql, bcmath, pcntl
+          coverage: none
+      - name: Instalar dependencias
+        run: composer install --prefer-dist --no-interaction --no-progress
+      - name: Cenarios BDD (Behat)
+        env:
+          DB_CONNECTION: pgsql
+          DB_HOST: 127.0.0.1
+          DB_PORT: "5432"
+          DB_DATABASE: oficina_os_test
+          DB_USERNAME: postgres
+          DB_PASSWORD: postgres
+        run: vendor/bin/behat
