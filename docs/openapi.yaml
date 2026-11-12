@@ -1,0 +1,698 @@
+# Contrato HTTP do OS Service — OpenAPI 3.0.3.
+#
+# Fonte de verdade sao as rotas em routes/api.php e os FormRequests em
+# app/Http/Requests/. O formato escolhido para validation errors e o padrao do
+# Laravel ({"message", "errors"}); erros de dominio viram {"erro"} com 404 ou
+# 409, conforme o controller.
+#
+# A collection do Postman em docs/postman/ segue este documento. Se uma rota
+# mudar aqui e la nao (ou o contrario), uma delas esta mentindo.
+openapi: 3.0.3
+info:
+  title: OS Service — Ordens de Serviço
+  description: |
+    API do serviço que guarda a ordem de serviço e orquestra a saga da Fase 4
+    (ADRs 0007 e 0009 em docs/adrs-fase4.md).
+
+    A saga começa em `POST /ordens-servico/{id}/diagnostico`: o mecânico fecha
+    o diagnóstico e o Orchestrator grava o primeiro comando no outbox, na
+    mesma transação da mudança de estado. O orçamento, o pagamento e a
+    execução **não** são síncronos — chegam por mensagem, dos outros serviços.
+    Por isso o diagnóstico responde `202`: o que ficou pronto ali foi a
+    decisão do mecânico, não o orçamento.
+
+    O cliente acompanha o avanço por `GET /ordens-servico/{id}` (estado, do
+    Postgres) e `GET /ordens-servico/{id}/historico` (histórico projetado no
+    MongoDB — lado de leitura do CQRS, eventualmente consistente, ADR-0009).
+
+    Máquina de estados: 10 status e a tabela de transições legais está em
+    `docs/saga-maquina-estados.md`. Qualquer tentativa fora da tabela vira
+    `409`.
+  version: 1.0.0
+
+servers:
+  - url: http://localhost:8000/api
+    description: Local (artisan serve)
+  - url: /api
+    description: Pelo gateway Kong, no cluster (strip_path desligado)
+
+tags:
+  - name: Ordens de Serviço
+  - name: Clientes
+  - name: Veículos
+
+paths:
+  /ordens-servico:
+    post:
+      tags: [Ordens de Serviço]
+      summary: Abre a ordem de serviço
+      description: |
+        Cria a OS em `RECEBIDA`. A saga ainda não começa: ela nasce só quando
+        o diagnóstico é concluído.
+      operationId: abrirOrdemServico
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AbrirOrdemServico'
+            example:
+              clienteId: 0d1c2c3e-6f2a-4b8e-9a1b-2c3d4e5f6a7b
+              veiculoId: 1a2b3c4d-5e6f-4a9b-8c7d-6e5f4a3b2c1d
+              descricaoProblema: Barulho no freio dianteiro
+      responses:
+        '201':
+          description: OS aberta.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrdemServico'
+        '422':
+          description: |
+            Erro de validação. `clienteId` e `veiculoId` exigem `uuid`: id
+            inválido vira 422 na borda em vez de 500 la embaixo no Postgres.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErroValidacao'
+
+  /ordens-servico/{id}/diagnostico:
+    post:
+      tags: [Ordens de Serviço]
+      summary: Fecha o diagnóstico e INICIA A SAGA
+      description: |
+        Único ponto de entrada que não vem de um evento. Grava
+        `GerarOrcamento` no outbox na mesma transação da transição para
+        `AGUARDANDO_ORCAMENTO` e responde `202` com o `sagaId`.
+
+        `itensDiagnosticados` com lista vazia é recusado com `422`: orçamento
+        zerado faria a cobrança recusar e a OS ficaria presa em
+        `AGUARDANDO_PAGAMENTO` para sempre. Descrições fora do catálogo do
+        Billing NÃO são validadas aqui — a saga nasce e compensa com
+        `item_fora_do_catalogo`, porque o catálogo é do Billing (ADR-0007).
+      operationId: concluirDiagnostico
+      parameters:
+        - $ref: '#/components/parameters/OsId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ConcluirDiagnostico'
+            example:
+              mecanicoId: 2b3c4d5e-6f7a-4b8c-9d0e-1f2a3b4c5d6e
+              diagnostico: Pastilhas no limite e disco empenado
+              itensDiagnosticados:
+                - descricao: Parafuso
+                  tipo: peca
+                  quantidade: 2
+                - descricao: Alinhamento
+                  tipo: servico
+                  quantidade: 1
+      responses:
+        '202':
+          description: |
+            Decisão registrada e saga iniciada. O orçamento vem depois, por
+            mensagem — acompanhe pelo `GET /ordens-servico/{id}`.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - type: object
+                    properties:
+                      sagaId:
+                        type: string
+                        format: uuid
+                  - $ref: '#/components/schemas/OrdemServico'
+        '404':
+          $ref: '#/components/responses/NaoEncontrado'
+        '409':
+          description: |
+            Transição ilegal para o estado atual — por exemplo, concluir o
+            diagnóstico duas vezes. É conflito com o estado, não erro de
+            formato.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErroConflito'
+        '422':
+          description: Erro de validação (corpo malformado ou sem itens).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErroValidacao'
+
+  /ordens-servico/{id}:
+    get:
+      tags: [Ordens de Serviço]
+      summary: Estado atual da OS
+      description: |
+        Lê do Postgres (lado de escrita). Reflete a saga no momento em que o
+        consumidor perguntou; para a trilha de eventos, use o `/historico`.
+      operationId: consultarOrdemServico
+      parameters:
+        - $ref: '#/components/parameters/OsId'
+      responses:
+        '200':
+          description: Estado atual.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrdemServico'
+        '404':
+          $ref: '#/components/responses/NaoEncontrado'
+
+  /ordens-servico/{id}/historico:
+    get:
+      tags: [Ordens de Serviço]
+      summary: Histórico projetado da OS (read model)
+      description: |
+        Lado de leitura do CQRS (ADR-0009): status e histórico vêm do MongoDB,
+        projeto do tópico de eventos. É **eventualmente consistente**.
+
+        `commandId` devolve o último `messageId` projetado: o cliente compara
+        com o id que recebeu no comando e sabe se está lendo dado atrasado.
+      operationId: consultarHistorico
+      parameters:
+        - $ref: '#/components/parameters/OsId'
+      responses:
+        '200':
+          description: Projeção atual da OS.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HistoricoProjecao'
+        '404':
+          description: Nenhuma projeção para esta OS (ainda).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Erro'
+
+  /clientes:
+    get:
+      tags: [Clientes]
+      summary: Lista clientes
+      operationId: listarClientes
+      responses:
+        '200':
+          description: Clientes cadastrados.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  dados:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Cliente'
+    post:
+      tags: [Clientes]
+      summary: Cadastra cliente
+      description: |
+        O documento é a identidade natural: o mesmo CPF/CNPJ não vira dois
+        clientes (`409`). Os dígitos verificadores são conferidos pelos value
+        objects `Cpf`/`Cnpj`; documento inválido vira `422` com o motivo.
+      operationId: cadastrarCliente
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SalvarCliente'
+            example:
+              nome: Johny Oliveira
+              tipo: pessoa_fisica
+              documento: '123.456.789-09'
+              telefone: '11987654321'
+              email: johny@example.com
+      responses:
+        '201':
+          description: Cliente cadastrado.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Cliente'
+        '409':
+          description: Já existe cliente com este documento.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Erro'
+                  - type: object
+                    properties:
+                      clienteId:
+                        type: string
+                        format: uuid
+        '422':
+          description: Erro de validação (formato, e-mail ou documento inválido).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErroValidacao'
+
+  /clientes/{id}:
+    parameters:
+      - $ref: '#/components/parameters/ClienteId'
+    get:
+      tags: [Clientes]
+      summary: Busca cliente
+      operationId: buscarCliente
+      responses:
+        '200':
+          description: Cliente.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Cliente'
+        '404':
+          $ref: '#/components/responses/NaoEncontrado'
+    put:
+      tags: [Clientes]
+      summary: Atualiza cliente
+      operationId: atualizarCliente
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SalvarCliente'
+      responses:
+        '200':
+          description: Cliente atualizado.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Cliente'
+        '404':
+          $ref: '#/components/responses/NaoEncontrado'
+        '409':
+          description: Outro cliente já usa este documento.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Erro'
+                  - type: object
+                    properties:
+                      clienteId:
+                        type: string
+                        format: uuid
+        '422':
+          description: Erro de validação.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErroValidacao'
+
+  /veiculos:
+    get:
+      tags: [Veículos]
+      summary: Lista veículos
+      description: Aceita `?clienteId=` para listar só os veículos de um cliente.
+      operationId: listarVeiculos
+      parameters:
+        - name: clienteId
+          in: query
+          required: false
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Veículos (todos, ou do cliente informado).
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  dados:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Veiculo'
+    post:
+      tags: [Veículos]
+      summary: Cadastra veículo
+      description: |
+        Confere se o cliente existe (`422` se não) e se a placa já não está
+        registrada (`409`). A placa aceita o formato antigo (AAA-1234) e o
+        Mercosul (AAA1A23) — regra toda no value object `Placa`.
+      operationId: cadastrarVeiculo
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SalvarVeiculo'
+            example:
+              clienteId: 0d1c2c3e-6f2a-4b8e-9a1b-2c3d4e5f6a7b
+              placa: DEM1A23
+              marca: Toyota
+              modelo: Corolla
+              ano: 2020
+              cor: prata
+      responses:
+        '201':
+          description: Veículo cadastrado.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Veiculo'
+        '409':
+          description: Já existe veículo com esta placa.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Erro'
+        '422':
+          description: Cliente não encontrado ou erro de validação.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErroValidacao'
+
+  /veiculos/{id}:
+    get:
+      tags: [Veículos]
+      summary: Busca veículo
+      operationId: buscarVeiculo
+      parameters:
+        - $ref: '#/components/parameters/VeiculoId'
+      responses:
+        '200':
+          description: Veículo.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Veiculo'
+        '404':
+          $ref: '#/components/responses/NaoEncontrado'
+
+components:
+  parameters:
+    OsId:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    ClienteId:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    VeiculoId:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+
+  responses:
+    NaoEncontrado:
+      description: Recurso não encontrado.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Erro'
+
+  schemas:
+    StatusOrdem:
+      type: string
+      description: |
+        Os 10 estados da máquina (docs/saga-maquina-estados.md). Transições
+        legais: RECEBIDA→EM_DIAGNOSTICO→AGUARDANDO_ORCAMENTO→
+        AGUARDANDO_APROVACAO→APROVADA→AGUARDANDO_PAGAMENTO→EM_EXECUCAO→
+        FINALIZADA→ENTREGUE; AGUARDANDO_ORCAMENTO, AGUARDANDO_APROVACAO,
+        AGUARDANDO_PAGAMENTO e EM_EXECUCAO podem ir para CANCELADA (com
+        compensação, quando há o que desfazer).
+      enum:
+        - RECEBIDA
+        - EM_DIAGNOSTICO
+        - AGUARDANDO_ORCAMENTO
+        - AGUARDANDO_APROVACAO
+        - APROVADA
+        - AGUARDANDO_PAGAMENTO
+        - EM_EXECUCAO
+        - FINALIZADA
+        - ENTREGUE
+        - CANCELADA
+
+    OrdemServico:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        status:
+          $ref: '#/components/schemas/StatusOrdem'
+        version:
+          type: integer
+          description: |
+            Versão do agregado para o lock otimista (ADR-0011, Reread Value):
+            a transição falha se a versão mudou desde a leitura.
+          minimum: 1
+        clienteId:
+          type: string
+          format: uuid
+        veiculoId:
+          type: string
+          format: uuid
+        mecanicoId:
+          type: string
+          format: uuid
+          nullable: true
+        descricaoProblema:
+          type: string
+          nullable: true
+        diagnostico:
+          type: string
+          nullable: true
+        valorTotal:
+          type: number
+          nullable: true
+        orcamentoId:
+          type: string
+          format: uuid
+          nullable: true
+        pagamentoId:
+          type: string
+          format: uuid
+          nullable: true
+        execucaoId:
+          type: string
+          format: uuid
+          nullable: true
+
+    AbrirOrdemServico:
+      type: object
+      required: [clienteId, veiculoId, descricaoProblema]
+      properties:
+        clienteId:
+          type: string
+          format: uuid
+        veiculoId:
+          type: string
+          format: uuid
+        descricaoProblema:
+          type: string
+          minLength: 5
+          maxLength: 2000
+
+    ConcluirDiagnostico:
+      type: object
+      required: [mecanicoId, diagnostico, itensDiagnosticados]
+      properties:
+        mecanicoId:
+          type: string
+          format: uuid
+        diagnostico:
+          type: string
+          minLength: 5
+          maxLength: 2000
+        itensDiagnosticados:
+          type: array
+          minItems: 1
+          items:
+            type: object
+            required: [descricao, tipo, quantidade]
+            properties:
+              descricao:
+                type: string
+                maxLength: 255
+              tipo:
+                type: string
+                enum: [peca, servico]
+              quantidade:
+                type: integer
+                minimum: 1
+
+    Cliente:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        nome:
+          type: string
+        tipo:
+          type: string
+          enum: [pessoa_fisica, pessoa_juridica]
+        documento:
+          type: string
+          description: Documento formatado (como o value object o imprime).
+        documentoRaw:
+          type: string
+          description: Só os dígitos — a chave de unicidade.
+        telefone:
+          type: string
+        email:
+          type: string
+          format: email
+        criadoEm:
+          type: string
+          description: 'Y-m-d H:i:s'
+
+    SalvarCliente:
+      type: object
+      required: [nome, tipo, documento, telefone, email]
+      properties:
+        nome:
+          type: string
+          minLength: 2
+          maxLength: 255
+        tipo:
+          type: string
+          enum: [pessoa_fisica, pessoa_juridica]
+        documento:
+          type: string
+          minLength: 11
+          maxLength: 18
+          description: |
+            Sem regex aqui: os dígitos verificadores são conferidos pelo value
+            object (Cpf/Cnpj) e documento inválido volta como 422.
+        telefone:
+          type: string
+          minLength: 8
+          maxLength: 32
+        email:
+          type: string
+          format: email
+          maxLength: 255
+
+    Veiculo:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        clienteId:
+          type: string
+          format: uuid
+        placa:
+          type: string
+        marca:
+          type: string
+        modelo:
+          type: string
+        ano:
+          type: integer
+        cor:
+          type: string
+          nullable: true
+        criadoEm:
+          type: string
+          description: 'Y-m-d H:i:s'
+
+    SalvarVeiculo:
+      type: object
+      required: [clienteId, placa, marca, modelo, ano]
+      properties:
+        clienteId:
+          type: string
+          format: uuid
+        placa:
+          type: string
+          minLength: 7
+          maxLength: 8
+        marca:
+          type: string
+          maxLength: 64
+        modelo:
+          type: string
+          maxLength: 64
+        ano:
+          type: integer
+          minimum: 1900
+          maximum: 2027
+        cor:
+          type: string
+          maxLength: 32
+          nullable: true
+
+    HistoricoProjecao:
+      type: object
+      properties:
+        osId:
+          type: string
+          format: uuid
+        status:
+          type: string
+          description: Último status projetado.
+        commandId:
+          type: string
+          nullable: true
+          description: Último messageId projetado — para o cliente saber se está lendo dado atrasado.
+        historico:
+          type: array
+          items:
+            type: object
+            properties:
+              tipo:
+                type: string
+                description: Tipo do evento ou comando que avançou a saga.
+              status:
+                type: string
+                nullable: true
+              ocorridoEm:
+                type: string
+              messageId:
+                type: string
+              dados:
+                type: object
+                description: Corpo do evento, como o contrato de eventos define (docs/contrato-eventos-fase4.md).
+
+    Erro:
+      type: object
+      required: [erro]
+      properties:
+        erro:
+          type: string
+
+    ErroConflito:
+      type: object
+      required: [erro, status]
+      properties:
+        erro:
+          type: string
+        status:
+          $ref: '#/components/schemas/StatusOrdem'
+
+    ErroValidacao:
+      type: object
+      description: Formato de erro de validação do Laravel.
+      required: [message, errors]
+      properties:
+        message:
+          type: string
+        errors:
+          type: object
+          additionalProperties:
+            type: array
+            items:
+              type: string
