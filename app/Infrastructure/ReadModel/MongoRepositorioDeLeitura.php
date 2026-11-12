@@ -21,9 +21,9 @@ class MongoRepositorioDeLeitura implements RepositorioDeLeituraInterface
         $colecao = $this->colecao();
         $osId = $evento['osId'];
 
-        $atual = $colecao->where('osId', $osId)->first();
+        $atual = $this->normalizar($colecao->where('osId', $osId)->first());
 
-        if ($atual !== null && in_array($evento['messageId'], (array) ($atual['messageIds'] ?? []), true)) {
+        if ($atual !== null && in_array($evento['messageId'], $atual['messageIds'] ?? [], true)) {
             return; // reentrega: nada a fazer
         }
 
@@ -55,17 +55,14 @@ class MongoRepositorioDeLeitura implements RepositorioDeLeituraInterface
             $alteracoes['status'] = $evento['status'];
         }
 
-        $colecao->where('osId', $osId)
-            ->push('historico', $entrada)
-            ->push('messageIds', $evento['messageId'])
-            ->update($alteracoes);
+        $colecao->where('osId', $osId)->push('historico', $entrada);
+        $colecao->where('osId', $osId)->push('messageIds', $evento['messageId']);
+        $colecao->where('osId', $osId)->update($alteracoes);
     }
 
     public function buscarPorOsId(string $osId): ?array
     {
-        $doc = $this->colecao()->where('osId', $osId)->first();
-
-        return $doc === null ? null : (array) $doc;
+        return $this->normalizar($this->colecao()->where('osId', $osId)->first());
     }
 
     public function listar(int $limite = 50): array
@@ -74,8 +71,22 @@ class MongoRepositorioDeLeitura implements RepositorioDeLeituraInterface
             ->orderBy('atualizadoEm', 'desc')
             ->limit($limite)
             ->get()
-            ->map(fn ($doc) => (array) $doc)
+            ->map(fn ($doc) => $this->normalizar($doc))
             ->all();
+    }
+
+    /**
+     * O driver do MongoDB devolve stdClass, não array. O read model é
+     * consumido por controllers e testes que esperam array, então a
+     * conversão fica aqui, na borda, e não em cada chamador.
+     */
+    private function normalizar(mixed $doc): ?array
+    {
+        if ($doc === null) {
+            return null;
+        }
+
+        return json_decode(json_encode($doc), true);
     }
 
     private function colecao()
