@@ -154,14 +154,3 @@ class MessagePublisher
         }
     }
 }
-
-/**
- * Topologia ausente no broker.
- *
- * Nao e transitorio: tentar de novo nao faz a fila aparecer. O OutboxPublisher
- * conta a tentativa, e depois do teto a linha fica travada com o motivo escrito
- * em ultimo_erro — que e onde um alerta deve olhar.
- */
-class TopologiaAusente extends \RuntimeException
-{
-}

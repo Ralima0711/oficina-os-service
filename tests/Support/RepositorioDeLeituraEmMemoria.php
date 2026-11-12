@@ -12,6 +12,11 @@ class RepositorioDeLeituraEmMemoria implements RepositorioDeLeituraInterface
     /** @var array<string, array> */
     public array $documentos = [];
 
+    public function garantirIndices(): void
+    {
+        // Em memoria nao ha indice: o array ja e unico por osId.
+    }
+
     public function registrarEvento(array $evento): void
     {
         $osId = $evento['osId'];

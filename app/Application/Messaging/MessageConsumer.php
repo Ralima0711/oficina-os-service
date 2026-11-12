@@ -98,9 +98,7 @@ class MessageConsumer
     {
         $channel = $this->channel();
 
-        if (!$this->confereFila($channel, $queue)) {
-            return;
-        }
+        $this->exigirFila($channel, $queue);
 
         $this->escutarParada($channel);
         $channel->basic_qos(0, 1, false);
@@ -141,18 +139,33 @@ class MessageConsumer
      * seguir usando a mesma conexão depois — por isso o retorno booleano em vez
      * de uma exceção tratada no laço.
      */
-    private function confereFila(AMQPChannel $channel, string $queue): bool
+    /**
+     * Declare passivo: confere que a fila existe sem criar nada.
+     *
+     * ESTOURA em vez de devolver false. Devolver false fazia o consume()
+     * retornar, o handle() do comando chegar ao `return Command::SUCCESS` e o
+     * processo sair com codigo 0 — um worker que nao consumiu nada reportando
+     * sucesso. Em Deployment isso vira reinicio em laco com saida zero, que e
+     * a combinacao mais dificil de perceber que existe.
+     *
+     * O MessagePublisher ja fazia assim, com a mesma excecao.
+     */
+    private function exigirFila(AMQPChannel $channel, string $queue): void
     {
         try {
             $channel->queue_declare($queue, true);
-            return true;
         } catch (AMQPProtocolChannelException $e) {
             Log::error(
                 "Fila {$queue} não existe neste broker. A topologia vem do "
                 . 'rabbitmq/definitions.json no oficina-infra-fase4.',
                 ['erro' => $e->getMessage()]
             );
-            return false;
+
+            throw new TopologiaAusente(
+                "Fila {$queue} nao existe neste broker. A topologia vem do "
+                . 'rabbitmq/definitions.json no oficina-infra-fase4.',
+                previous: $e,
+            );
         }
     }
 

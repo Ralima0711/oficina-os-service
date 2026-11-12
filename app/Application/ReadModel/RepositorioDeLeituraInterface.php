@@ -26,6 +26,16 @@ interface RepositorioDeLeituraInterface
      */
     public function registrarEvento(array $evento): void;
 
+    /**
+     * Garante os indices de que a idempotencia depende.
+     *
+     * Esta na porta, e nao so no adaptador, porque e pre-condicao do contrato
+     * acima: sem indice unico em osId, dois upserts concorrentes para uma OS
+     * que ainda nao existe inserem dois documentos e "um documento por OS"
+     * deixa de valer. Quem implementa em memoria nao precisa fazer nada.
+     */
+    public function garantirIndices(): void;
+
     public function buscarPorOsId(string $osId): ?array;
 
     /** @return array<int, array> */

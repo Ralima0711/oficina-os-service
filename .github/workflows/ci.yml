@@ -23,7 +23,10 @@ jobs:
       # composer.lock: pdo_pgsql para o Postgres, bcmath porque o
       # php-amqplib 2.8 declara ext-bcmath, pcntl para o SIGTERM dos workers.
       # pdo_sqlite continua porque parte da suite roda em memoria.
-      extensoes: "mbstring, pdo_sqlite, pdo_pgsql, bcmath, pcntl"
+      # mongodb entrou com o read model: mongodb/laravel-mongodb 5.12 exige
+      # ext-mongodb ^2.5, e o pipeline roda `composer install` sem
+      # --ignore-platform-reqs — sem a extensao aqui a instalacao falha.
+      extensoes: "mbstring, pdo_sqlite, pdo_pgsql, bcmath, pcntl, mongodb"
 
       # pgsql e nao sqlite: SagaOutboxTest e OrdemServicoApiTest EXIGEM Postgres
       # — as colunas sao `uuid` e no SQLite `uuid()` vira texto solto, que foi
