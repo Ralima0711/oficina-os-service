@@ -1,7 +1,7 @@
 # Checklist de pendências — Fase 4 (Johny)
 
-Estado verificado contra o código em `feat/read-model` (2b15e33) e contra o GitHub, em 12/11/2026.
-Suíte local: 315 testes, 611 asserções, 43 pulados, OK.
+Estado verificado contra a `main` (1d0b56b, com #12 e #13 mergeados) e contra o GitHub, em 12/11/2026.
+Suíte local: 319 testes, 627 asserções, 43 pulados, OK. Com o fix do #15 no container: 320 testes, 641 asserções, 39 pulados.
 
 ## 1. No meu nome
 
@@ -39,33 +39,45 @@ Suíte local: 315 testes, 611 asserções, 43 pulados, OK.
 
 ## 3. De todos — o que ainda não fecha
 
-- [ ] **Idempotência do read model no Mongo (apontada pelo Gustavo em 12/11)**
-  `MongoRepositorioDeLeitura::registrarEvento` usa `updateOne` com `upsert: true` e filtro
+- [x] **Idempotência do read model no Mongo (apontada pelo Gustavo em 12/11)**
+  `MongoRepositorioDeLeitura::registrarEvento` usava `updateOne` com `upsert: true` e filtro
   `{osId, messageIds: {$ne: messageId}}`. Na reentrega o filtro não casa e o upsert **insere** —
   o upsert não olha se o documento existe. Com o índice único em `osId` (criado no arranque do worker)
-  isso vira erro 11000, que não é `LostUpdateException` nem `PDOException`, então o `MessageConsumer`
-  manda para a DLQ em vez de tratar como já aplicada. Provado no Mongo real: 11000 na reentrega.
-  Correção: `updateOne` sem upsert quando o documento existe; `insert` só quando não existe;
-  `DuplicateKey` na corrida vira segunda tentativa do update.
-  **O teste `testReentregaNaoDuplicaNoMongo` NÃO pega isso**: ele não chama `garantirIndices()`,
-  então sem índice único a reentrega insere um segundo documento e a asserção olha só o primeiro.
-  Verificado: o teste passa e deixa 2 documentos com o mesmo `osId` na coleção.
+  isso virava erro 11000, que não é `LostUpdateException` nem `PDOException`, então o `MessageConsumer`
+  mandava para a DLQ em vez de tratar como já aplicada. Provado no Mongo real: 11000 na reentrega.
+  **Corrigido no PR #15** (`fix/read-model-idempotencia`, commit 28e3faa): `updateOne` sem upsert quando
+  o documento existe; `insert` só quando não existe; `DuplicateKey` na corrida vira segunda tentativa
+  do update, que não casa e não faz nada.
+  **O teste `testReentregaNaoDuplicaNoMongo` não pegava**: ele não chamava `garantirIndices()`, então
+  sem índice único a reentrega inseria um segundo documento e a asserção olhava só o primeiro.
+  Agora cria o índice e conta os documentos; `testReentregaConcorrenteNaoEstoura` cobre a corrida.
+  Verificado contra o código antigo: os dois testes falham com E11000. Com o fix: 320 testes, 641
+  asserções, 39 pulados, OK.
 
 - [ ] **Bindings do read model no manifesto do cluster**
   `k8s/base/11-rabbitmq-definitions.yaml` liga `os.readmodel.eventos` só em `os.*`. Os bindings de
   `orcamento.*`, `pagamento.*`, `execucao.*` e `aprovacao.expirada` estão no `definitions.json` do
   compose, não no manifesto — no EKS o worker não vê o meio da saga. Correção no `oficina-infra-fase4`.
 
-- [ ] **PDF da entrega** — nenhum `.pdf` no repo.
+- [ ] **PDF da entrega** — nenhum `.pdf` no repo. Destravado: o read model já está na `main`.
 - [ ] **Vídeo** — adiado pela Roberta.
-- [ ] **Análise no SonarQube** — a configuração existe, mas o resultado no servidor não dá para confirmar daqui.
-- [ ] **Merge da pilha para a main** — #12 e #13 já entraram (main = 1d0b56b); o que resta é o PR desta branch.
+- [ ] **Análise no SonarQube rodando** — a chave foi preenchida no `ci.yml`, mas o job só executa com
+  `SONAR_TOKEN` nos secrets. Sem o token, continua pulado.
+- [x] **Merge da pilha para a main** — #8 a #13 todos mergeados; `main` = 1d0b56b, com o conteúdo
+  de `feat/dockerfile`, `fix/caminho-de-escrita`, `feat/api-ordens-servico`, `feat/cliente-e-veiculo`,
+  `fix/prazo-de-aprovacao`, `feat/read-model` e `fix/read-model-ligado`. Restam só os PRs #14 e #15.
+- [x] **Sonar no CI** — `sonar-project-key` estava vazio no `ci.yml` e o job era pulado inteiro.
+  Preenchido com `Ralima0711_oficina-os-service`, a mesma chave de `sonar-project.properties`.
+  Falta só o `SONAR_TOKEN` nos secrets para o scanner autenticar.
 
 ## 4. Ordem sugerida
 
 1. ~~`docs/openapi.yaml` — destrava também a collection do Postman.~~ ✅ 12/11
 2. ~~BDD do fluxo completo.~~ ✅ 12/11
-3. Fechar com a Roberta onde vive a API Composition.
+3. ~~Idempotência do read model~~ ✅ PR #15
+4. ~~Sonar no CI~~ ✅ 12/11 (falta o `SONAR_TOKEN`)
+5. Fechar com a Roberta onde vive a API Composition.
+6. PDF da entrega — agora destravado.
 
 ## 5. Como rodar o que foi feito
 

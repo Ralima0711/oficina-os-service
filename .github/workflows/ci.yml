@@ -57,9 +57,11 @@ jobs:
       # seria maquiar a metrica; remover resolve de verdade.
       cobertura-minima: 55
 
-      # Vazio enquanto nao existe projeto no SonarCloud. O job inteiro e
-      # pulado, em vez de falhar por falta de token.
-      sonar-project-key: ""
+      # A mesma chave de sonar-project.properties. Enquanto estava vazia, o job
+      # do Sonar era pulado inteiro: a configuracao existia e nunca rodava, que
+      # e o mesmo problema do pipeline que ninguem chamava. Falta so o
+      # SONAR_TOKEN nos secrets para o scanner ter onde autenticar.
+      sonar-project-key: "Ralima0711_oficina-os-service"
 
       imagem: ralima0711/oficina-os-service
       manifestos: k8s/os-service
