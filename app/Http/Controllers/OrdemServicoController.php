@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers;
 
+use App\Application\Composicao\ComporOrdemServico;
 use App\Application\ReadModel\RepositorioDeLeituraInterface;
 use App\Application\Saga\Orchestrator;
 use App\Domain\OrdemServico\Entities\OrdemServico;
@@ -144,6 +145,29 @@ class OrdemServicoController extends Controller
             'atualizadoEm' => $doc['atualizadoEm'] ?? null,
             'historico' => $doc['historico'] ?? [],
         ]);
+    }
+
+    /**
+     * API Composition: a OS com o orcamento e a execucao juntos.
+     *
+     * Junta o que esta espalhado pelos tres servicos numa resposta so. E
+     * leitura pura e sincrona — a saga continua inteiramente por mensageria, e
+     * nada aqui dispara passo nenhum.
+     *
+     * Participante fora do ar nao derruba a consulta: o que ele traria vem
+     * null e a resposta diz, em `parciais`, o que faltou. Consulta agregada
+     * que exige os tres de pe transforma tres servicos independentes num so,
+     * com a disponibilidade do pior deles.
+     */
+    public function completa(string $id, ComporOrdemServico $compositor): JsonResponse
+    {
+        $os = $this->repositorio->findById($id);
+
+        if ($os === null) {
+            return response()->json(['erro' => 'Ordem de servico nao encontrada.'], 404);
+        }
+
+        return response()->json($compositor->compor($this->representar($os), $os));
     }
 
     /** @return array<string, mixed> */
