@@ -59,7 +59,17 @@ jobs:
 
       # Vazio enquanto nao existe projeto no SonarCloud. O job inteiro e
       # pulado, em vez de falhar por falta de token.
-      sonar-project-key: ""
+      # Vazio pulava o job inteiro: o pipeline tinha analise e quality gate
+      # escritos e desligados. O projeto existe no SonarQube Cloud desde
+      # 13/11, o SONAR_TOKEN esta cadastrado e o Automatic Analysis foi
+      # desligado no projeto — com ele ligado, um projeto nao aceita os dois
+      # metodos e a analise vinda do CI e recusada.
+      #
+      # R maiusculo: a chave do PROJETO deriva do nome da conta do GitHub
+      # (Ralima0711); a chave da ORGANIZACAO no Sonar e ralima0711, minuscula,
+      # e vive no sonar-project.properties. As duas convivem e trocar uma pela
+      # outra faz o scanner analisar um projeto inexistente, sem erro visivel.
+      sonar-project-key: Ralima0711_oficina-os-service
 
       imagem: ralima0711/oficina-os-service
       manifestos: k8s/os-service
