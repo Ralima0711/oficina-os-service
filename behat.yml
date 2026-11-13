@@ -1,0 +1,14 @@
+default:
+  autoload:
+    '': '%paths.base%/features/bootstrap'
+  suites:
+    default:
+      # Os cenarios marcados com @saga exigem Postgres em banco *_test (colunas
+      # uuid; no SQLite `uuid()` e texto solto — a mesma razao do
+      # ExigeBancoDeTeste). Rodar tudo com o Postgres de teste no ar:
+      #   DB_CONNECTION=pgsql DB_HOST=127.0.0.1 DB_PORT=5433 DB_DATABASE=oficina_os_test \
+      #   DB_USERNAME=postgres DB_PASSWORD=postgres vendor/bin/behat
+      # So o CRUD (clientes e veiculos):
+      #   vendor/bin/behat --tags='~@saga'
+      contexts:
+        - FeatureContext

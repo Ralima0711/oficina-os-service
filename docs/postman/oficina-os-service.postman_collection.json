@@ -1,0 +1,192 @@
+{
+  "info": {
+    "name": "OS Service — Fase 4",
+    "description": "Collection do OS Service, derivada de docs/openapi.yaml. Se uma rota mudar num lugar e não no outro, uma delas está mentindo.\n\nOrdem dos requests segue a saga: cadastre cliente e veículo, abra a OS, conclua o diagnóstico (a saga começa ali) e acompanhe pelo GET. O histórico vem do MongoDB e é eventualmente consistente.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    { "key": "baseUrl", "value": "http://localhost:8000" },
+    { "key": "osId", "value": "" },
+    { "key": "sagaId", "value": "" },
+    { "key": "clienteId", "value": "" },
+    { "key": "veiculoId", "value": "" }
+  ],
+  "item": [
+    {
+      "name": "Clientes",
+      "item": [
+        {
+          "name": "Cadastrar cliente",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.response.code === 201) {",
+                  "    pm.collectionVariables.set('clienteId', pm.response.json().id);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": "{{baseUrl}}/api/clientes",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"nome\": \"Johny Oliveira\",\n  \"tipo\": \"pessoa_fisica\",\n  \"documento\": \"123.456.789-09\",\n  \"telefone\": \"11987654321\",\n  \"email\": \"johny@example.com\"\n}"
+            }
+          }
+        },
+        {
+          "name": "Listar clientes",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/api/clientes"
+          }
+        },
+        {
+          "name": "Buscar cliente",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/api/clientes/{{clienteId}}"
+          }
+        },
+        {
+          "name": "Atualizar cliente",
+          "request": {
+            "method": "PUT",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": "{{baseUrl}}/api/clientes/{{clienteId}}",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"nome\": \"Johny Oliveira\",\n  \"tipo\": \"pessoa_fisica\",\n  \"documento\": \"123.456.789-09\",\n  \"telefone\": \"11987650000\",\n  \"email\": \"johny.novo@example.com\"\n}"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Veículos",
+      "item": [
+        {
+          "name": "Cadastrar veículo",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.response.code === 201) {",
+                  "    pm.collectionVariables.set('veiculoId', pm.response.json().id);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": "{{baseUrl}}/api/veiculos",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"clienteId\": \"{{clienteId}}\",\n  \"placa\": \"DEM1A23\",\n  \"marca\": \"Toyota\",\n  \"modelo\": \"Corolla\",\n  \"ano\": 2020,\n  \"cor\": \"prata\"\n}"
+            }
+          }
+        },
+        {
+          "name": "Listar veículos do cliente",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/api/veiculos?clienteId={{clienteId}}"
+          }
+        },
+        {
+          "name": "Buscar veículo",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/api/veiculos/{{veiculoId}}"
+          }
+        }
+      ]
+    },
+    {
+      "name": "Ordens de Serviço",
+      "item": [
+        {
+          "name": "Abrir OS",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.response.code === 201) {",
+                  "    pm.collectionVariables.set('osId', pm.response.json().id);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": "{{baseUrl}}/api/ordens-servico",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"clienteId\": \"{{clienteId}}\",\n  \"veiculoId\": \"{{veiculoId}}\",\n  \"descricaoProblema\": \"Barulho no freio dianteiro\"\n}"
+            }
+          }
+        },
+        {
+          "name": "Concluir diagnóstico (INICIA A SAGA)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.response.code === 202) {",
+                  "    pm.collectionVariables.set('sagaId', pm.response.json().sagaId);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": "{{baseUrl}}/api/ordens-servico/{{osId}}/diagnostico",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"mecanicoId\": \"2b3c4d5e-6f7a-4b8c-9d0e-1f2a3b4c5d6e\",\n  \"diagnostico\": \"Pastilhas no limite e disco empenado\",\n  \"itensDiagnosticados\": [\n    { \"descricao\": \"Parafuso\", \"tipo\": \"peca\", \"quantidade\": 2 },\n    { \"descricao\": \"Alinhamento\", \"tipo\": \"servico\", \"quantidade\": 1 }\n  ]\n}"
+            }
+          }
+        },
+        {
+          "name": "Consultar OS (estado)",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/api/ordens-servico/{{osId}}"
+          }
+        },
+        {
+          "name": "Consultar histórico (read model, MongoDB)",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/api/ordens-servico/{{osId}}/historico"
+          }
+        },
+        {
+          "name": "OS inexistente (404)",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/api/ordens-servico/00000000-0000-4000-8000-000000000000"
+          }
+        }
+      ]
+    }
+  ]
+}
