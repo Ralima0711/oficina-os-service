@@ -39,6 +39,13 @@ Route::get('ordens-servico/{id}', [OrdemServicoController::class, 'show'])
 Route::get('ordens-servico/{id}/historico', [OrdemServicoController::class, 'historico'])
     ->name('ordens-servico.historico');
 
+// Consulta agregada (API Composition): a OS com o orcamento do Billing e a
+// timeline da Execucao juntos. E a unica rota deste servico que fala HTTP com
+// os outros dois — a saga inteira e por mensageria. Leitura pura, e participante
+// fora do ar vira campo null com o motivo em `parciais`, nao erro 5xx.
+Route::get('ordens-servico/{id}/completa', [OrdemServicoController::class, 'completa'])
+    ->name('ordens-servico.completa');
+
 // ----------------------------------------------------------------- Cliente
 Route::get('clientes', [ClienteController::class, 'index'])->name('clientes.index');
 Route::post('clientes', [ClienteController::class, 'store'])->name('clientes.store');
