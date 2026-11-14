@@ -1,5 +1,6 @@
 <?php
 
+use App\Infrastructure\Observability\ContextoObservabilidadeProcessor;
 use Monolog\Formatter\JsonFormatter;
 use Monolog\Handler\NullHandler;
 use Monolog\Handler\StreamHandler;
@@ -19,7 +20,7 @@ return [
     |
     */
 
-    'default' => env('LOG_CHANNEL', 'stack'),
+    'default' => env('LOG_CHANNEL', 'stdout_json'),
 
     /*
     |--------------------------------------------------------------------------
@@ -143,6 +144,27 @@ return [
             'driver' => 'errorlog',
             'level' => env('LOG_LEVEL', 'debug'),
             'replace_placeholders' => true,
+        ],
+
+        // Log estruturado em JSON no stdout — formato consumido pelo New Relic
+        // (logs in context) e por coletores em Kubernetes. É o canal padrão dos
+        // 3 serviços (ver docs/contrato-observabilidade.md no infra).
+        //
+        // O canal 'stack' escrevia em arquivo dentro do container: `kubectl logs`
+        // vinha vazio e o New Relic não coletava nada. O processor injeta
+        // service.name e o trace.id do span corrente em cada linha.
+        'stdout_json' => [
+            'driver' => 'monolog',
+            'level' => env('LOG_LEVEL', 'info'),
+            'handler' => StreamHandler::class,
+            'handler_with' => [
+                'stream' => 'php://stdout',
+            ],
+            'formatter' => JsonFormatter::class,
+            'processors' => [
+                PsrLogMessageProcessor::class,
+                ContextoObservabilidadeProcessor::class,
+            ],
         ],
 
         'null' => [

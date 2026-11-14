@@ -2,6 +2,7 @@
 
 namespace App\Application\Messaging;
 
+use App\Infrastructure\Messaging\MessageTracing;
 use PhpAmqpLib\Channel\AMQPChannel;
 use PhpAmqpLib\Connection\AMQPStreamConnection;
 use PhpAmqpLib\Exception\AMQPProtocolChannelException;
@@ -51,25 +52,31 @@ class MessagePublisher
      */
     public function publishCommand(string $queue, Envelope $envelope): void
     {
-        $channel = $this->channel();
+        // Span PRODUCER em volta do publish: o traceparent que vai no envelope e
+        // no header AMQP passa a ser o do span, e o consumidor vira filho dele.
+        MessageTracing::publicar($queue, function (array $headers) use ($queue, $envelope): void {
+            $envelope = $envelope->comTraceparent((string) ($headers['traceparent'] ?? ''));
 
-        $this->exigirFila($channel, $queue);
+            $channel = $this->channel();
 
-        $msg = new AMQPMessage(
-            $envelope->toJson(),
-            [
-                'content_type' => 'application/json',
-                'delivery_mode' => AMQPMessage::DELIVERY_MODE_PERSISTENT,
-                'message_id' => $envelope->getMessageId(),
-                'correlation_id' => $envelope->getSagaId(),
-                'type' => $envelope->getType(),
-                'timestamp' => time(),
-                'application_headers' => new AMQPTable($this->amqpTable($envelope)),
-            ]
-        );
+            $this->exigirFila($channel, $queue);
 
-        $channel->basic_publish($msg, '', $queue);
-        $channel->close();
+            $msg = new AMQPMessage(
+                $envelope->toJson(),
+                [
+                    'content_type' => 'application/json',
+                    'delivery_mode' => AMQPMessage::DELIVERY_MODE_PERSISTENT,
+                    'message_id' => $envelope->getMessageId(),
+                    'correlation_id' => $envelope->getSagaId(),
+                    'type' => $envelope->getType(),
+                    'timestamp' => time(),
+                    'application_headers' => new AMQPTable($this->amqpTable($envelope)),
+                ]
+            );
+
+            $channel->basic_publish($msg, '', $queue);
+            $channel->close();
+        }, ['os.id' => $envelope->getBody()['osId'] ?? null]);
     }
 
     /**
@@ -77,25 +84,29 @@ class MessagePublisher
      */
     public function publishEvent(Envelope $envelope): void
     {
-        $channel = $this->channel();
+        MessageTracing::publicar($envelope->getType(), function (array $headers) use ($envelope): void {
+            $envelope = $envelope->comTraceparent((string) ($headers['traceparent'] ?? ''));
 
-        $this->exigirExchange($channel);
+            $channel = $this->channel();
 
-        $msg = new AMQPMessage(
-            $envelope->toJson(),
-            [
-                'content_type' => 'application/json',
-                'delivery_mode' => AMQPMessage::DELIVERY_MODE_PERSISTENT,
-                'message_id' => $envelope->getMessageId(),
-                'correlation_id' => $envelope->getSagaId(),
-                'type' => $envelope->getType(),
-                'timestamp' => time(),
-                'application_headers' => new AMQPTable($this->amqpTable($envelope)),
-            ]
-        );
+            $this->exigirExchange($channel);
 
-        $channel->basic_publish($msg, $this->exchange, $envelope->getType());
-        $channel->close();
+            $msg = new AMQPMessage(
+                $envelope->toJson(),
+                [
+                    'content_type' => 'application/json',
+                    'delivery_mode' => AMQPMessage::DELIVERY_MODE_PERSISTENT,
+                    'message_id' => $envelope->getMessageId(),
+                    'correlation_id' => $envelope->getSagaId(),
+                    'type' => $envelope->getType(),
+                    'timestamp' => time(),
+                    'application_headers' => new AMQPTable($this->amqpTable($envelope)),
+                ]
+            );
+
+            $channel->basic_publish($msg, $this->exchange, $envelope->getType());
+            $channel->close();
+        }, ['os.id' => $envelope->getBody()['osId'] ?? null]);
     }
 
     /**
