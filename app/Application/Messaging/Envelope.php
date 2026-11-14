@@ -61,8 +61,7 @@ final class Envelope
         );
     }
 
-    public function getMessageId(): string  { return $this->messageId; }
-    public function getSagaId(): string     { return $this->sagaId; }
+    public function getMessageId(): string  { return $this->messageId; }    public function getSagaId(): string     { return $this->sagaId; }
     public function getCausationId(): ?string { return $this->causationId; }
     public function getType(): string       { return $this->type; }
     public function getOccurredAt(): string { return $this->occurredAt; }
@@ -89,6 +88,23 @@ final class Envelope
     public function toJson(): string
     {
         return json_encode($this->toArray(), JSON_UNESCAPED_SLASHES);
+    }
+
+    /**
+     * Mesmo envelope com outro traceparent. O publicador usa isto para gravar
+     * o contexto do span PRODUCER: o consumidor passa a ser filho dele, e não
+     * irmão do span que originou a mensagem.
+     */
+    public function comTraceparent(string $traceparent): self
+    {
+        if ($traceparent === '' || $traceparent === $this->traceparent) {
+            return $this;
+        }
+
+        $novo = clone $this;
+        $novo->traceparent = $traceparent;
+
+        return $novo;
     }
 
     /**

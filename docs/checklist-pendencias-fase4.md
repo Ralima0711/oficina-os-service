@@ -21,6 +21,15 @@ Suíte local: 319 testes, 627 asserções, 43 pulados, OK. Com o fix do #15 no c
   exigem Postgres em banco `*_test` (mesma guarda do `ExigeBancoDeTeste`; o FeatureContext recusa o resto).
   CI: job `bdd` em `.github/workflows/ci.yml` com Postgres de serviço.
 
+- [x] **Trace distribuído — SDK do OpenTelemetry no os-service (apontado pelo David em 13/11)**
+  O serviço repassava o `traceparent` no envelope e nos headers AMQP, mas não gerava span nenhum:
+  no New Relic aparecia só o pedaço da Execução e o trace não atravessava os três serviços.
+  Agora tem `open-telemetry/sdk` + `exporter-otlp`, span SERVER no middleware HTTP, span PRODUCER
+  no `MessagePublisher` e CONSUMER no `MessageConsumer` (filho do `traceparent` recebido), e log
+  JSON no stdout com `service.name` e `trace.id` injetados por processor. Sem
+  `OTEL_EXPORTER_OTLP_ENDPOINT` o provider é no-op e nada quebra — o infra já entrega o endpoint e
+  `OTEL_SERVICE_NAME=oficina-os-service` nos manifestos (PR #9 do infra).
+
 - [ ] **Consulta agregada da OS via API Composition no Kong**
   `k8s/base/20-kong.yaml` (infra) só tem rota por serviço: `os-ordens-servico`, `os-clientes`, `os-veiculos`, billing, execucao. Nenhuma rota agregada.
   Depende de decisão da Roberta: rota composta no Kong ou BFF no os-service.

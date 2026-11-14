@@ -3,6 +3,7 @@
 namespace App\Application\Messaging;
 
 use Closure;
+use App\Infrastructure\Messaging\MessageTracing;
 use Illuminate\Database\QueryException;
 use Illuminate\Support\Facades\Log;
 use JsonException;
@@ -203,7 +204,14 @@ class MessageConsumer
             $messageId = (string) $dados['header']['messageId'];
             $envelope = Envelope::fromArray($this->priorizarTraceparent($dados, $msg));
 
-            $handler($envelope);
+            // Span CONSUMER: filho do traceparent que veio na mensagem. Tudo o
+            // que o handler logar ou publicar aqui dentro fica no mesmo trace.
+            MessageTracing::consumir(
+                (string) ($dados['header']['type'] ?? 'mensagem'),
+                $this->headersDaMensagem($msg, $envelope),
+                fn () => $handler($envelope),
+                ['os.id' => $envelope->getBody()['osId'] ?? null],
+            );
 
             unset($this->tentativas[$messageId]);
             $channel->basic_ack($tag);
@@ -297,8 +305,30 @@ class MessageConsumer
         return $dados;
     }
 
-    /** SIGTERM do Kubernetes encerra depois da mensagem atual, não no meio dela. */
-    private function escutarParada(AMQPChannel $channel): void
+    /**
+     * Headers de trace da mensagem recebida, para o span CONSUMER herdar o
+     * contexto. O header AMQP vence o envelope, como no priorizarTraceparent.
+     *
+     * @return array<string, string>
+     */
+    private function headersDaMensagem(AMQPMessage $msg, Envelope $envelope): array
+    {
+        $headers = ['traceparent' => $envelope->getTraceparent()];
+
+        $amqp = $msg->get_properties()['application_headers'] ?? null;
+
+        if ($amqp instanceof AMQPTable) {
+            $doAmqp = $amqp->getNativeData()['traceparent'] ?? null;
+
+            if (is_string($doAmqp) && $doAmqp !== '') {
+                $headers['traceparent'] = $doAmqp;
+            }
+        }
+
+        return $headers;
+    }
+
+    /** SIGTERM do Kubernetes encerra depois da mensagem atual, não no meio dela. */    private function escutarParada(AMQPChannel $channel): void
     {
         if (!function_exists('pcntl_async_signals')) {
             return;
