@@ -3,6 +3,8 @@
 namespace App\Application\Messaging;
 
 use App\Infrastructure\Messaging\MessageTracing;
+use App\Infrastructure\Messaging\TraceContextCarrier;
+use OpenTelemetry\Context\ContextInterface;
 use PhpAmqpLib\Channel\AMQPChannel;
 use PhpAmqpLib\Connection\AMQPStreamConnection;
 use PhpAmqpLib\Exception\AMQPProtocolChannelException;
@@ -76,7 +78,7 @@ class MessagePublisher
 
             $channel->basic_publish($msg, '', $queue);
             $channel->close();
-        }, ['os.id' => $envelope->getBody()['osId'] ?? null]);
+        }, ['os.id' => $envelope->getBody()['osId'] ?? null], self::contextoPai($envelope));
     }
 
     /**
@@ -106,7 +108,7 @@ class MessagePublisher
 
             $channel->basic_publish($msg, $this->exchange, $envelope->getType());
             $channel->close();
-        }, ['os.id' => $envelope->getBody()['osId'] ?? null]);
+        }, ['os.id' => $envelope->getBody()['osId'] ?? null], self::contextoPai($envelope));
     }
 
     /**
@@ -144,7 +146,19 @@ class MessagePublisher
         return $envelope->toAmqpHeaders();
     }
 
-    private function channel()
+    /**
+     * Pai do span PRODUCER: o traceparent guardado no envelope quando a intenção
+     * entrou no outbox. Quem publica é o saga:publicar-outbox, outro processo e
+     * sem span corrente; sem pai explícito o span viraria raiz de um trace novo,
+     * e o comTraceparent gravaria esse trace novo na mensagem — a saga partiria
+     * em um trace por mensagem publicada.
+     */
+    public static function contextoPai(Envelope $envelope): ContextInterface
+    {
+        return TraceContextCarrier::extract([TraceContextCarrier::TRACEPARENT => $envelope->getTraceparent()]);
+    }
+
+        private function channel()
     {
         if ($this->connection === null || !$this->connection->isConnected()) {
             $this->connection = new AMQPStreamConnection(

@@ -3,6 +3,7 @@
 namespace App\Application\Saga;
 
 use App\Application\Messaging\Envelope;
+use App\Infrastructure\Messaging\TraceContextCarrier;
 use App\Domain\OrdemServico\Entities\OrdemServico;
 use App\Domain\OrdemServico\Exceptions\LostUpdateException;
 use App\Domain\OrdemServico\Repositories\OrdemServicoRepositoryInterface;
@@ -119,6 +120,7 @@ class Orchestrator
                     'itensDiagnosticados' => $itensDiagnosticados,
                 ],
                 sagaId: $sagaId,
+                traceparent: $this->traceparentAtual(),
             );
 
             $this->outbox->comando(self::FILA_GERAR_ORCAMENTO, $envelope, $osId);
@@ -218,7 +220,7 @@ class Orchestrator
                 ],
                 sagaId: $env->getSagaId(),
                 causationId: $env->getMessageId(),
-                traceparent: $env->getTraceparent(),
+                traceparent: $this->traceparentAtual($env),
             ),
             $os->getId(),
         );
@@ -273,6 +275,7 @@ class Orchestrator
                 ],
                 sagaId: $env->getSagaId(),
                 causationId: $env->getMessageId(),
+                traceparent: $this->traceparentAtual($env),
             );
 
             $this->outbox->comando(self::FILA_COBRAR_PAGAMENTO, $comando, $os->getId());
@@ -321,6 +324,7 @@ class Orchestrator
                 ],
                 sagaId: $env->getSagaId(),
                 causationId: $env->getMessageId(),
+                traceparent: $this->traceparentAtual($env),
             );
 
             $this->outbox->comando(self::FILA_ENVIAR_EXECUCAO, $comando, $os->getId());
@@ -536,6 +540,7 @@ class Orchestrator
             body: $body,
             sagaId: $causa->getSagaId(),
             causationId: $causa->getMessageId(),
+            traceparent: $this->traceparentAtual($causa),
         );
 
         $this->outbox->comando($fila, $envelope, $os->getId());
@@ -564,6 +569,7 @@ class Orchestrator
             type: $estadoFinal === 'CANCELADA' ? 'os.cancelada' : 'os.finalizada',
             body: $body,
             sagaId: $sagaId,
+            traceparent: $this->traceparentAtual(),
         );
 
         $this->outbox->evento($envelope, $os->getId());
@@ -571,6 +577,27 @@ class Orchestrator
         DB::table('saga_estado')
             ->where('saga_id', $sagaId)
             ->update(['status' => $estadoFinal, 'finalizada_em' => now()]);
+    }
+
+    /**
+     * O traceparent que vai na mensagem gravada no outbox: o do span corrente (o
+     * CONSUMER do evento que causou o passo, ou o SERVER da requisição que abriu a
+     * saga). O publicador do outbox roda em outro processo, sem span nenhum, e usa
+     * este valor como pai do span PRODUCER — é o que mantém a saga num trace só
+     * (contrato de observabilidade, regra 10). Sem span corrente, vale o da
+     * mensagem que causou o passo; sem nenhum dos dois, o Envelope gera um.
+     */
+    private function traceparentAtual(?Envelope $causa = null): ?string
+    {
+        $corrente = TraceContextCarrier::inject()[TraceContextCarrier::TRACEPARENT] ?? null;
+
+        if (is_string($corrente) && $corrente !== '') {
+            return $corrente;
+        }
+
+        $daCausa = $causa?->getTraceparent();
+
+        return is_string($daCausa) && $daCausa !== '' ? $daCausa : null;
     }
 
     // ── Guardas ────────────────────────────────────────────────────

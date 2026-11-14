@@ -4,6 +4,10 @@ namespace Tests\Feature;
 
 use App\Application\Messaging\Envelope;
 use App\Application\Saga\Orchestrator;
+use App\Infrastructure\Messaging\MessageTracing;
+use App\Infrastructure\Messaging\TraceContextCarrier;
+use App\Infrastructure\Observability\Tracing;
+use OpenTelemetry\API\Trace\SpanKind;
 use App\Domain\OrdemServico\Entities\OrdemServico;
 use App\Domain\OrdemServico\Repositories\OrdemServicoRepositoryInterface;
 use App\Domain\OrdemServico\ValueObjects\StatusOrdem;
@@ -386,6 +390,53 @@ class SagaOutboxTest extends TestCase
             ],
             $this->outboxDe($osId)
         );
+    }
+
+    // ── Trace distribuído ──────────────────────────────────────────
+
+    private const TRACE_ID = '4bf92f3577b34da6a3ce929d0e0e4736';
+    private const TRACEPARENT = '00-' . self::TRACE_ID . '-00f067aa0ba902b7-01';
+
+    /** traceparent gravado no payload da linha do outbox, por tipo. */
+    private function traceparentNoOutbox(string $osId, string $tipo): ?string
+    {
+        $payload = DB::table('saga_outbox')->where('os_id', $osId)->where('tipo', $tipo)->value('payload');
+
+        return json_decode((string) $payload, true)['header']['traceparent'] ?? null;
+    }
+
+    public function test_saga_aberta_numa_requisicao_grava_o_trace_dela_no_outbox(): void
+    {
+        $span = Tracing::iniciar('POST /api/ordens-servico', [], SpanKind::KIND_SERVER, TraceContextCarrier::extract(['traceparent' => self::TRACEPARENT]));
+
+        try {
+            [$osId] = $this->osAguardandoOrcamento();
+        } finally {
+            Tracing::finalizar($span);
+        }
+
+        $this->assertSame(self::TRACE_ID, explode('-', (string) $this->traceparentNoOutbox($osId, 'GerarOrcamento'))[1] ?? null);
+    }
+
+    public function test_comando_gravado_no_outbox_continua_o_trace_do_evento_que_o_causou(): void
+    {
+        [$osId, $sagaId] = $this->osAguardandoOrcamento();
+
+        // Como o consumidor faz: o handler roda no span CONSUMER filho do traceparent recebido.
+        MessageTracing::consumir('orcamento.gerado', ['traceparent' => self::TRACEPARENT], fn () => $this->saga->onOrcamentoGerado(
+            $this->evento('orcamento.gerado', $sagaId, ['osId' => $osId, 'orcamentoId' => $this->id('o-1'), 'valorTotal' => 241.80])
+        ));
+        MessageTracing::consumir('orcamento.aprovado', ['traceparent' => self::TRACEPARENT], fn () => $this->saga->onOrcamentoAprovado(
+            $this->evento('orcamento.aprovado', $sagaId, ['osId' => $osId, 'orcamentoId' => $this->id('o-1'), 'decidioEm' => '2026-11-09T10:00:00Z'])
+        ));
+
+        foreach (['aprovacao.expirada', 'CobrarPagamento'] as $tipo) {
+            $this->assertSame(
+                self::TRACE_ID,
+                explode('-', (string) $this->traceparentNoOutbox($osId, $tipo))[1] ?? null,
+                "{$tipo} saiu do trace do evento que o causou."
+            );
+        }
     }
 
     // ── Compensação ────────────────────────────────────────────────
