@@ -89,20 +89,18 @@ cd oficina-infra-fase4 && docker compose up -d
 
 ### Cobertura
 
-A **meta** do enunciado é 80%. O que a suíte **mede** é **55,6%** (12/11, com pcov), e o
-gate do pipeline está em **55** — no número medido, não no desejado.
+[![Coverage](https://sonarcloud.io/api/project_badges/measure?project=Ralima0711_oficina-os-service&metric=coverage)](https://sonarcloud.io/summary/overall?id=Ralima0711_oficina-os-service)
+[![Quality Gate](https://sonarcloud.io/api/project_badges/measure?project=Ralima0711_oficina-os-service&metric=alert_status)](https://sonarcloud.io/summary/overall?id=Ralima0711_oficina-os-service)
 
-Gate acima do que se mede não reprova nada: ou se desliga na primeira vez que incomoda, ou
-se "atinge" excluindo arquivo do relatório. Os dois enganam. O gate está no medido para
-reprovar de verdade quando a cobertura cair, e sobe junto com ela.
+Meta do enunciado: **80% por serviço — atingida.**
 
-A distância para os 80% tem causa localizada: os domínios `Cliente` e `Veiculo` — 8
-arquivos, com `Cpf`, `Cnpj`, `Placa` e `DocumentoFiscal` — vieram da decomposição da Fase 3
-sem controller, sem repositório, sem rota e sem teste, e só foram ligados em 11/11.
+| Medida | Valor | Evidência |
+|---|---|---|
+| Cobertura de linha medida pelo pipeline (pcov, `clover.xml`) | **93,68%** (1496 / 1597 instruções) | [execução do CI na `main`, 15/11/2026](https://github.com/Ralima0711/oficina-os-service/actions/runs/43708335855), job *Testes e cobertura* |
+| Cobertura no SonarQube Cloud (linha + condição, só `app/`) | **80,7%** | [painel do projeto](https://sonarcloud.io/summary/overall?id=Ralima0711_oficina-os-service) |
+| Gate do pipeline | **80%** | `cobertura-minima: 80` no `.github/workflows/ci.yml` |
 
-No SonarQube Cloud a condição é **80% em New Code**, que é outra pergunta: não "quanto do
-código inteiro está coberto", e sim "o que entrou neste PR veio coberto". Essa dá para
-cobrar desde já, e é ela que faz a média subir sozinha.
+O job *Testes e cobertura* reprova o PR abaixo de 80%, e o Sonar cobra 80% no código novo de cada PR. Em cada execução do CI, o artefato `cobertura-os-service` traz o `clover.xml` completo, arquivo por arquivo. A meta foi atingida só com testes: nada foi excluído da medição.
 
 ---
 
