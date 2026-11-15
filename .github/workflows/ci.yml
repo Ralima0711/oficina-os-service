@@ -39,23 +39,9 @@ jobs:
       # teste.
       db-connection: pgsql
 
-      # 55, porque e o que a suite MEDE hoje: 55.6% em 12/11, com pcov.
-      #
-      # Numero baixo por um motivo concreto, nao por suite fraca: os dominios
-      # Cliente e Veiculo (8 arquivos, com Cpf, Cnpj, Placa e DocumentoFiscal)
-      # estao em 0% porque nao sao referenciados por NADA fora de si mesmos —
-      # nenhum controller, nenhuma implementacao de repositorio, nenhuma rota,
-      # nenhum teste. E scaffolding da decomposicao da Fase 3 que ficou para
-      # tras. O Models/User e o AppServiceProvider, idem.
-      #
-      # O que a suite de fato exercita esta bem coberto: controller e requests
-      # 100%, EloquentOrdemServicoRepository 92.6%, StatusOrdem 81.8%,
-      # OrdemServico 74.4%.
-      #
-      # Gate no valor medido segura regressao a partir de hoje. Subir o numero
-      # passa por decidir o que fazer com o codigo morto — excluir da medicao
-      # seria maquiar a metrica; remover resolve de verdade.
-      cobertura-minima: 55
+      # 80, a meta do enunciado. Medido 93.68% (1496/1597 instrucoes) em
+      # 15/11/2026, com pcov, sem excluir nada da medicao: agora atende a meta.
+      cobertura-minima: 80
 
       # A mesma chave de sonar-project.properties. Enquanto estava vazia, o job
       # do Sonar era pulado inteiro: a configuracao existia e nunca rodava, que
